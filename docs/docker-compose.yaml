@@ -1,0 +1,11 @@
+services:
+  site:
+    container_name: zola-docs
+    command: serve --interface 0.0.0.0 --port 4000 --base-url http://localhost
+    image: ghcr.io/getzola/zola:v0.22.1
+    volumes:
+      - "./:/app"
+    ports:
+      - "4000:4000"
+      - "1024:1024"
+    working_dir: /app

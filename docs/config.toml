@@ -1,0 +1,37 @@
+base_url = "/"
+title = "Godot Goodie Grabber"
+description = "A project manager for Godot games. Pin your engine version, manage addon dependencies from git, and run your project - all with one tool."
+default_language = "en"
+theme = "goyo"
+
+build_search_index = true
+generate_feeds = false
+
+[markdown]
+[markdown.highlighting]
+theme = "github-dark"
+
+[extra]
+tool_name = "Godot Goodie Grabber"
+cli_name = "ggg"
+
+nav = [
+    { name = "Documentation", url = "/docs/", type = "url", icon = "book" },
+    { name = "GitHub", url = "https://github.com/derkork/ggg", type = "url", icon = "github" },
+]
+
+footer_html = "Powered by <a href='https://www.getzola.org'>Zola</a> and <a href='https://github.com/hahwul/goyo'>Goyo</a>"
+
+[extra.logo]
+text = "Godot Goodie Grabber"
+
+[extra.theme]
+colorset = "dark"
+brightness = "normal"
+disable_toggle = false
+default_theme_dark = "goyo-dark"
+default_theme_light = "goyo-light"
+
+[extra.sidebar]
+expand_depth = 2
+disable_root_hide = false

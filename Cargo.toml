@@ -1,6 +1,19 @@
 [package]
-name = "gragen"
+name = "ggg"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+indicatif = "0.17"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_yml = "0.0.12"
+toml_edit = { version = "0.22", features = ["serde"] }
+tempfile = "3"
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"
