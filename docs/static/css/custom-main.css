@@ -1,0 +1,15 @@
+/* Hero logo - shown above the title on the landing page */
+h1.text-6xl::before {
+    --logo-width: 20rem;
+    --logo-aspect-ratio: 811 / 686;
+
+    content: "";
+    display: block;
+    width: var(--logo-width);
+    height: calc(var(--logo-width) / (var(--logo-aspect-ratio)));
+    background-image: url('/ggg.svg');
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    margin: 0 auto 2rem;
+}

@@ -12,6 +12,7 @@ generate_feeds = false
 theme = "github-dark"
 
 [extra]
+enable_custom_css = true
 tool_name = "Godot Goodie Grabber"
 cli_name = "ggg"
 
