@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [project]
-//! godot = "4.3.0"
+//! godot = "4.3-stable"
 //!
 //! [[dependency]]
 //! name = "gut"
@@ -27,6 +27,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::godot::release::GodotRelease;
+
 /// The full contents of a `ggg.toml` file.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -43,11 +45,11 @@ pub struct Config {
 /// The `[project]` table.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Project {
-    /// Godot version to use, in `MAJOR.MINOR.PATCH` form (e.g. `"4.3.0"`).
+    /// The exact Godot build to use, e.g. `"4.3-stable"` or `"4.3-stable-mono"`.
     ///
     /// `ggg sync` downloads this binary if it is not already cached.
     /// `ggg edit` and `ggg run` invoke it.
-    pub godot: String,
+    pub godot: GodotRelease,
 }
 
 /// One `[[dependency]]` entry - a single addon sourced from a git repository.
@@ -112,8 +114,15 @@ impl Config {
     /// Returns an error if the file cannot be read, if the TOML is invalid,
     /// or if validation fails (e.g. duplicate dependency names).
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!(
+                    "no ggg.toml found in the current directory - run `ggg init` to create one"
+                )
+            } else {
+                anyhow::anyhow!("failed to read {}: {}", path.display(), e)
+            }
+        })?;
         let config: Self = toml_edit::de::from_str(&content)
             .with_context(|| format!("failed to parse {}", path.display()))?;
         config.validate()?;
@@ -157,6 +166,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::godot::release::GodotRelease;
 
     // --- helpers -----------------------------------------------------------
 
@@ -178,10 +188,10 @@ mod tests {
         // A config with only [project] and no dependencies is valid.
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
         "#);
 
-        assert_eq!(config.project.godot, "4.3.0");
+        assert_eq!(config.project.godot, "4.3-stable".parse::<GodotRelease>().unwrap());
         assert!(config.dependency.is_empty());
     }
 
@@ -189,7 +199,7 @@ mod tests {
     fn parse_dependency_without_map() {
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -209,7 +219,7 @@ mod tests {
         // When `to` is omitted, the entry is still valid - the field is None.
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -228,7 +238,7 @@ mod tests {
     fn parse_dependency_with_renamed_map() {
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -250,7 +260,7 @@ mod tests {
     fn parse_multiple_dependencies() {
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -281,7 +291,7 @@ mod tests {
     fn parse_missing_dependency_name_fails() {
         let result = toml_edit::de::from_str::<Config>(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             git = "https://github.com/bitwes/Gut.git"
@@ -294,7 +304,7 @@ mod tests {
     fn parse_missing_dependency_git_fails() {
         let result = toml_edit::de::from_str::<Config>(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -307,7 +317,7 @@ mod tests {
     fn parse_missing_dependency_rev_fails() {
         let result = toml_edit::de::from_str::<Config>(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -320,7 +330,7 @@ mod tests {
     fn parse_missing_map_entry_from_fails() {
         let result = toml_edit::de::from_str::<Config>(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -337,7 +347,7 @@ mod tests {
     fn validate_rejects_duplicate_dependency_names() {
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -357,7 +367,7 @@ mod tests {
     fn validate_accepts_unique_dependency_names() {
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -381,7 +391,7 @@ mod tests {
         // so the written file stays clean and round-trips back correctly.
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -398,7 +408,7 @@ mod tests {
         // Same principle for the `to` field inside a map entry.
         let config = parse(r#"
             [project]
-            godot = "4.3.0"
+            godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
@@ -421,7 +431,7 @@ mod tests {
         let path = dir.path().join("ggg.toml");
 
         let original = Config {
-            project: Project { godot: "4.3.0".into() },
+            project: Project { godot: "4.3-stable".parse().unwrap() },
             dependency: vec![
                 Dependency {
                     name: "gut".into(),
@@ -437,7 +447,7 @@ mod tests {
         original.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
 
-        assert_eq!(loaded.project.godot, "4.3.0");
+        assert_eq!(loaded.project.godot, "4.3-stable".parse::<GodotRelease>().unwrap());
         assert_eq!(loaded.dependency.len(), 1);
         assert_eq!(loaded.dependency[0].name, "gut");
         let map = loaded.dependency[0].map.as_ref().unwrap();
@@ -447,7 +457,7 @@ mod tests {
     #[test]
     fn load_missing_file_returns_error() {
         let result = Config::load(std::path::Path::new("does_not_exist.toml"));
-        assert!(result.unwrap_err().to_string().contains("does_not_exist.toml"));
+        assert!(result.unwrap_err().to_string().contains("ggg init"));
     }
 
     #[test]
@@ -456,7 +466,7 @@ mod tests {
         let path = dir.path().join("ggg.toml");
 
         let invalid = Config {
-            project: Project { godot: "4.3.0".into() },
+            project: Project { godot: "4.3-stable".parse().unwrap() },
             dependency: vec![
                 Dependency {
                     name: "gut".into(),

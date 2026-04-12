@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use super::versions::GodotRelease;
+use super::release::GodotRelease;
 
 /// Environment variable that overrides the default cache location.
 const CACHE_DIR_ENV_VAR: &str = "GGG_CACHE_DIR";
@@ -250,11 +250,11 @@ mod tests {
     }
 
     fn stable(version: &str) -> GodotRelease {
-        GodotRelease { version: version.into(), flavor: "stable".into(), mono: false }
+        GodotRelease { version: version.parse().unwrap(), flavor: "stable".into(), mono: false }
     }
 
     fn stable_mono(version: &str) -> GodotRelease {
-        GodotRelease { version: version.into(), flavor: "stable".into(), mono: true }
+        GodotRelease { version: version.parse().unwrap(), flavor: "stable".into(), mono: true }
     }
 
     #[test]
@@ -297,22 +297,10 @@ mod tests {
     }
 
     #[test]
-    fn install_rejects_release_with_path_traversal_in_version() {
-        let (_dir, cache) = make_cache();
-        let bad = GodotRelease {
-            version: "../../etc".into(),
-            flavor: "stable".into(),
-            mono: false,
-        };
-        let archive = std::path::PathBuf::from("irrelevant.zip");
-        assert!(cache.install(&bad, &archive).unwrap_err().to_string().contains("version"));
-    }
-
-    #[test]
     fn remove_rejects_release_with_path_traversal_in_flavor() {
         let (_dir, cache) = make_cache();
         let bad = GodotRelease {
-            version: "4.3".into(),
+            version: "4.3".parse().unwrap(),
             flavor: "../bad".into(),
             mono: false,
         };

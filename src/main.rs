@@ -1,6 +1,9 @@
-mod config;
-mod godot;
+mod commands;
+use ggg::config;
+use ggg::dependency;
+use ggg::godot;
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// A project manager for Godot games.
@@ -24,14 +27,22 @@ enum Command {
     Sync,
 
     /// Open the project in the pinned Godot editor
-    Edit,
+    ///
+    /// All arguments after `edit` are forwarded verbatim to Godot.
+    /// ggg-level flags (e.g. --no-download) must come before the subcommand.
+    Edit {
+        /// Arguments forwarded verbatim to the Godot editor
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 
     /// Run Godot against the project
     ///
-    /// Pass additional arguments after `--`, e.g. `ggg run -- --headless`
+    /// All arguments after `run` are forwarded verbatim to Godot.
+    /// ggg-level flags (e.g. --no-download) must come before the subcommand.
     Run {
-        /// Extra arguments forwarded to Godot
-        #[arg(last = true)]
+        /// Arguments forwarded verbatim to Godot
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
 
@@ -61,6 +72,15 @@ enum SelfCommand {
     Update,
 }
 
-fn main() {
-    let _cli = Cli::parse();
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Init                      => commands::init::run(),
+        Command::Sync                      => commands::sync::run(),
+        Command::Edit { args }             => commands::edit::run(&args),
+        Command::Run { args }              => commands::run::run(&args),
+        Command::Add { git_url }           => commands::add::run(&git_url),
+        Command::Remove { name }           => commands::remove::run(&name),
+        Command::SelfUpdate { command: _ } => anyhow::bail!("not yet implemented"),
+    }
 }

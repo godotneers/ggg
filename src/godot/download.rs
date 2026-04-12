@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 
-use super::versions::GodotRelease;
+use super::release::GodotRelease;
 
 const GODOT_BUILDS_API: &str =
     "https://api.github.com/repos/godotengine/godot-builds/releases/tags";
@@ -170,8 +170,7 @@ fn download_archive(url: &str, release: &GodotRelease) -> Result<PathBuf> {
     pb.set_style(
         ProgressStyle::with_template(
             "{msg} [{bar:40}] {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
-        )
-        .unwrap()
+        )?
         .progress_chars("=> "),
     );
     pb.set_message(format!("Downloading Godot {}", release.tag()));
@@ -209,7 +208,7 @@ mod tests {
     use super::*;
 
     fn release(version: &str, flavor: &str, mono: bool) -> GodotRelease {
-        GodotRelease { version: version.into(), flavor: flavor.into(), mono }
+        GodotRelease { version: version.parse().unwrap(), flavor: flavor.into(), mono }
     }
 
     fn make_assets(names: &[&str]) -> Vec<Asset> {
@@ -265,9 +264,4 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("no suitable asset"));
     }
 
-    #[test]
-    fn download_release_rejects_invalid_release() {
-        let bad = release("../../etc", "stable", false);
-        assert!(download_release(&bad).is_err());
-    }
 }

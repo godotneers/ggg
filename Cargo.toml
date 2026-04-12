@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 dirs = "6"
 indicatif = "0.17"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
@@ -14,6 +15,7 @@ serde_yml = "0.0.12"
 toml_edit = { version = "0.22", features = ["serde"] }
 tempfile = "3"
 zip = "2"
+gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "blocking-http-transport-reqwest-native-tls", "blocking-network-client"] }
 
 [dev-dependencies]
 tempfile = "3"
