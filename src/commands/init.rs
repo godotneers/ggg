@@ -76,7 +76,7 @@ pub fn run() -> Result<()> {
 
     let release = GodotRelease { version: chosen.version.clone(), flavor: chosen.flavor.clone(), mono };
 
-    let config = Config { project: Project { godot: release }, dependency: vec![] };
+    let config = Config { project: Project { godot: release }, sync: None, dependency: vec![] };
     config.save(ggg_toml)?;
     ensure_gitignore_entry(Path::new(".gitignore"), STATE_FILE)?;
 

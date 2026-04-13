@@ -98,7 +98,11 @@ pub fn build_plan(
 
         let cache_dir = dep_cache.entry_path(&resolved);
 
-        let plan = plan_install(&resolved, &cache_dir, project_root, old_state, force)
+        let force_overwrite = config.sync.as_ref()
+            .map(|s| s.force_overwrite.as_slice())
+            .unwrap_or(&[]);
+
+        let plan = plan_install(&resolved, &cache_dir, project_root, old_state, force, force_overwrite)
             .with_context(|| format!("failed to plan install for {:?}", dep.name))?;
 
         works.push(DepWork { resolved, resolve_note, plan });

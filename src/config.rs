@@ -34,12 +34,30 @@ use crate::godot::release::GodotRelease;
 pub struct Config {
     /// `[project]` - engine version declaration.
     pub project: Project,
+    /// `[sync]` - optional sync behaviour settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<Sync>,
     /// `[[dependency]]` - zero or more addon dependencies.
     ///
     /// Deserialises as an empty `Vec` when no `[[dependency]]` tables are
     /// present, so callers never need to handle a missing key explicitly.
     #[serde(default)]
     pub dependency: Vec<Dependency>,
+}
+
+/// The `[sync]` table - optional sync behaviour overrides.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Sync {
+    /// Glob patterns (e.g. `**/*.import`, `**/*.uid`) matched against
+    /// project-relative paths.  Any file whose path matches one of these
+    /// patterns is unconditionally overwritten on `ggg sync`, bypassing
+    /// conflict detection.
+    ///
+    /// Use this for files that the Godot engine itself rewrites automatically
+    /// (import metadata, UIDs) so that engine-driven changes are never treated
+    /// as conflicts.
+    #[serde(default)]
+    pub force_overwrite: Vec<String>,
 }
 
 /// The `[project]` table.
@@ -457,6 +475,7 @@ mod tests {
 
         let original = Config {
             project: Project { godot: "4.3-stable".parse().unwrap() },
+            sync: None,
             dependency: vec![
                 Dependency {
                     name: "gut".into(),
@@ -492,6 +511,7 @@ mod tests {
 
         let invalid = Config {
             project: Project { godot: "4.3-stable".parse().unwrap() },
+            sync: None,
             dependency: vec![
                 Dependency {
                     name: "gut".into(),

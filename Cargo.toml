@@ -18,6 +18,7 @@ zip = "2"
 gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "blocking-http-transport-reqwest-native-tls", "blocking-network-client", "attributes"] }
 sha2 = "0.10"
 diffy = "0.3"
+globset = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

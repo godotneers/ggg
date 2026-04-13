@@ -38,6 +38,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 
 use crate::dependency::ResolvedDependency;
@@ -88,20 +89,25 @@ pub struct CleanupPlan {
 
 /// Compute what would be installed for `dep` without writing anything to disk.
 ///
-/// Set `force` to skip conflict checks.
+/// Set `force` to skip all conflict checks.  `force_overwrite` is a list of
+/// glob patterns (e.g. `**/*.import`) matched against project-relative paths;
+/// files that match bypass conflict detection and are always overwritten.
 pub fn plan_install(
     dep: &ResolvedDependency,
     cache_dir: &Path,
     project_root: &Path,
     state: &LocalState,
     force: bool,
+    force_overwrite: &[String],
 ) -> Result<InstallPlan> {
     let pairs = collect_file_pairs(dep, cache_dir)?;
+
+    let overwrite_set = build_overwrite_set(force_overwrite)?;
 
     let conflicts = if force {
         Conflicts::default()
     } else {
-        collect_conflicts(&pairs, project_root, state)?
+        collect_conflicts(&pairs, project_root, state, &overwrite_set)?
     };
 
     // Build the state entry using cache hashes as the source of truth.
@@ -318,10 +324,14 @@ fn collect_recursive(
 
 /// Collect all conflicts without bailing - separates ggg-modified files from
 /// unmanaged files so callers can report them with appropriate messages.
+///
+/// Files whose project-relative path key matches `overwrite_set` are skipped:
+/// they will be unconditionally overwritten regardless of their on-disk state.
 fn collect_conflicts(
     pairs: &[(PathBuf, PathBuf)],
     project_root: &Path,
     state: &LocalState,
+    overwrite_set: &GlobSet,
 ) -> Result<Conflicts> {
     let mut conflicts = Conflicts::default();
 
@@ -332,6 +342,10 @@ fn collect_conflicts(
         }
 
         let key = path_key(rel_dest);
+
+        if overwrite_set.is_match(&key) {
+            continue;
+        }
         let on_disk_hash = hash_file(&dest)
             .with_context(|| format!("failed to hash {}", dest.display()))?;
 
@@ -435,6 +449,21 @@ fn stage_and_install(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build a [`GlobSet`] from the `force_overwrite` pattern list.
+///
+/// Returns an error if any pattern is syntactically invalid.  An empty
+/// pattern list produces an empty set that matches nothing.
+fn build_overwrite_set(patterns: &[String]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for p in patterns {
+        builder.add(
+            Glob::new(p)
+                .with_context(|| format!("invalid force_overwrite pattern: {:?}", p))?,
+        );
+    }
+    builder.build().context("failed to build force_overwrite glob set")
+}
 
 /// Build a map from project-relative path key to absolute cache path for all
 /// files belonging to `dep`.  Used by `ggg diff` to locate the original
@@ -576,7 +605,7 @@ mod tests {
         state: &LocalState,
         force: bool,
     ) -> Result<StateEntry> {
-        let plan = plan_install(dep, cache, project, state, force)?;
+        let plan = plan_install(dep, cache, project, state, force, &[])?;
         assert!(plan.conflicts.is_empty(), "unexpected conflicts in inst()");
         execute_install(&plan, project)?;
         Ok(plan.entry)
@@ -667,7 +696,7 @@ mod tests {
         let result = plan_install(
             &make_dep("dep", Some(map)),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         );
 
         assert!(result.is_err());
@@ -740,7 +769,7 @@ mod tests {
         let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
 
         assert!(plan.conflicts.is_empty());
@@ -759,7 +788,7 @@ mod tests {
         let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
 
         assert!(plan.conflicts.is_empty());
@@ -796,7 +825,7 @@ mod tests {
         let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
 
         assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()),
@@ -816,7 +845,7 @@ mod tests {
         let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &state, false,
+            &state, false, &[],
         ).unwrap();
 
         assert!(plan.conflicts.modified.contains(&"plugin.gd".to_string()),
@@ -840,6 +869,72 @@ mod tests {
         assert_eq!(read(project.path(), "plugin.gd"), b"# dep content");
     }
 
+    // --- force_overwrite ----------------------------------------------------
+
+    #[test]
+    fn force_overwrite_pattern_bypasses_conflict() {
+        // A file is on disk with different content than the cache, and is NOT
+        // recorded in the state (would normally be an unmanaged conflict).
+        // With a matching force_overwrite pattern it must not be reported as a
+        // conflict and must be overwritten on execute.
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(),   "addons/gut/gut.import", b"# dep import");
+        write(project.path(), "addons/gut/gut.import", b"# godot-modified import");
+
+        let patterns = vec!["**/*.import".to_string()];
+        let plan = plan_install(
+            &make_dep("dep", None),
+            cache.path(), project.path(),
+            &LocalState::default(), false, &patterns,
+        ).unwrap();
+
+        assert!(plan.conflicts.is_empty(), "force_overwrite file should not be a conflict");
+        assert_eq!(plan.to_write.len(), 1, "file with differing content should still be in to_write");
+
+        execute_install(&plan, project.path()).unwrap();
+        assert_eq!(read(project.path(), "addons/gut/gut.import"), b"# dep import");
+    }
+
+    #[test]
+    fn force_overwrite_does_not_affect_non_matching_files() {
+        // A non-matching file next to a matching one should still be conflict-checked.
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(),   "plugin.gd",     b"# dep");
+        write(cache.path(),   "plugin.import",  b"# dep import");
+        write(project.path(), "plugin.gd",     b"# user modified");
+        write(project.path(), "plugin.import",  b"# godot modified");
+
+        let patterns = vec!["**/*.import".to_string()];
+        let plan = plan_install(
+            &make_dep("dep", None),
+            cache.path(), project.path(),
+            &LocalState::default(), false, &patterns,
+        ).unwrap();
+
+        assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()),
+            "non-matching file should still be reported as conflict");
+        assert!(plan.conflicts.unmanaged.iter().all(|p| p != "plugin.import"),
+            "matching file should not be reported as conflict");
+    }
+
+    #[test]
+    fn force_overwrite_invalid_pattern_returns_error() {
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "plugin.gd", b"# content");
+
+        let patterns = vec!["[invalid".to_string()];
+        let result = plan_install(
+            &make_dep("dep", None),
+            cache.path(), project.path(),
+            &LocalState::default(), false, &patterns,
+        );
+
+        assert!(result.is_err(), "invalid glob pattern should return an error");
+    }
+
     // --- idempotency --------------------------------------------------------
 
     #[test]
@@ -853,7 +948,7 @@ mod tests {
         let first = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
         assert_eq!(first.to_write.len(), 2);
         execute_install(&first, project.path()).unwrap();
@@ -862,7 +957,7 @@ mod tests {
         let second = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
         assert_eq!(second.to_write.len(), 0);
         // State entry still records all files.
@@ -880,7 +975,7 @@ mod tests {
         let first = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
         execute_install(&first, project.path()).unwrap();
         let mut state = LocalState::default();
@@ -892,7 +987,7 @@ mod tests {
         let second = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &state, false,
+            &state, false, &[],
         ).unwrap();
         assert_eq!(second.to_write.len(), 1);
         execute_install(&second, project.path()).unwrap();
@@ -910,7 +1005,7 @@ mod tests {
         plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
 
         assert!(!exists(project.path(), "plugin.gd"));
@@ -926,7 +1021,7 @@ mod tests {
         let plan = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), false,
+            &LocalState::default(), false, &[],
         ).unwrap();
 
         assert_eq!(plan.entry.files.len(), 1);
