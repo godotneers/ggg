@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_error() {
-        let result = Config::load(std::path::Path::new("does_not_exist.toml"));
+        let result = Config::load(Path::new("does_not_exist.toml"));
         assert!(result.unwrap_err().to_string().contains("ggg init"));
     }
 

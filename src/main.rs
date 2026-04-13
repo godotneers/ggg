@@ -1,4 +1,5 @@
 mod commands;
+mod utils;
 use ggg::config;
 use ggg::dependency;
 use ggg::godot;
@@ -73,6 +74,17 @@ enum Command {
         name: String,
     },
 
+    /// Show local changes to ggg-owned files
+    ///
+    /// Displays a unified diff between the version installed by ggg and the
+    /// current on-disk content for every ggg-owned file that has been modified.
+    /// Exits with code 1 when modified files are found, 0 when all files are
+    /// unmodified.
+    Diff {
+        /// Show the diff for a specific file only
+        file: Option<String>,
+    },
+
     /// Update Godot Goodie Grabber itself
     #[command(name = "self")]
     SelfUpdate {
@@ -96,6 +108,7 @@ fn main() -> Result<()> {
         Command::Run { args }              => commands::run::run(&args),
         Command::Add { git_url, yes }       => commands::add::run(git_url.as_deref(), yes),
         Command::Remove { name }           => commands::remove::run(&name),
+        Command::Diff { file }             => commands::diff::run(file.as_deref()),
         Command::SelfUpdate { command: _ } => anyhow::bail!("not yet implemented"),
     }
 }

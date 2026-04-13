@@ -1,8 +1,16 @@
 //! Installing a cached dependency tree into a Godot project.
 //!
-//! [`install`] copies files from the dependency cache into the project,
-//! respecting the `map` entries in `ggg.toml` and enforcing ownership rules
-//! so that user files are never silently overwritten.
+//! [`plan_install`] computes what would be installed (files to write plus any
+//! conflicts) without touching disk.  [`execute_install`] carries out a plan
+//! that has already been checked for conflicts.
+//!
+//! [`plan_cleanup`] computes which stale files (left by a removed or remapped
+//! dependency) would be deleted, separating unmodified files (safe to delete)
+//! from user-modified ones (conflicts).  [`execute_cleanup`] carries out the
+//! deletion.
+//!
+//! `sync.rs` always runs the plan phase across all dependencies first, and
+//! only calls the execute functions when every plan is conflict-free.
 //!
 //! # Conflict detection
 //!
@@ -14,9 +22,8 @@
 //!   on-disk hash matches what GGG would install - indicating a prior install
 //!   whose state record was lost.
 //!
-//! Any other existing file is treated as user-owned and causes the whole
-//! install to abort before a single byte is written.  Pass
-//! [`InstallOptions::force`] to skip conflict checks.
+//! Any other existing file is a conflict.  Pass `force = true` to skip all
+//! conflict checks.
 //!
 //! # Atomicity
 //!
@@ -30,7 +37,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::dependency::ResolvedDependency;
@@ -44,25 +51,14 @@ const METADATA_FILE: &str = ".ggg_dep_info.toml";
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Options that modify install behaviour.
-pub struct InstallOptions {
-    /// When `true`, check for conflicts and compute what would be installed,
-    /// but write nothing to disk.
-    pub dry_run: bool,
-    /// When `true`, skip conflict checks and overwrite any existing file.
-    pub force: bool,
-}
-
-/// Install a dependency from `cache_dir` into `project_root`.
-///
-/// The outcome of an [`install`] call.
-pub struct InstallOutcome {
-    /// Every file owned by this dependency (written + already up to date).
+/// Everything needed to install one dependency - computed without writing
+/// anything to disk.
+pub struct InstallPlan {
+    /// Every file owned by this dependency (to-write + already up to date).
     pub entry: StateEntry,
-    /// Number of files actually written to disk (0 = everything already matched).
-    pub written: usize,
-    /// Conflicts that would block a real install.  Non-empty only in dry-run
-    /// mode; a normal install bails immediately when conflicts are detected.
+    /// Files that need to be written to disk: (cache source, project-relative dest).
+    pub to_write: Vec<(PathBuf, PathBuf)>,
+    /// Conflicts that block the install.  Empty when `force` is true.
     pub conflicts: Conflicts,
 }
 
@@ -81,52 +77,36 @@ impl Conflicts {
     }
 }
 
-/// Install a dependency from `cache_dir` into `project_root`.
+/// What [`plan_cleanup`] found: files safe to delete and files that block
+/// deletion because the user modified them.
+pub struct CleanupPlan {
+    /// Files to remove: (absolute path, display key).
+    pub to_remove: Vec<(PathBuf, String)>,
+    /// Stale files modified by the user that block removal without `--force`.
+    pub modified: Vec<String>,
+}
+
+/// Compute what would be installed for `dep` without writing anything to disk.
 ///
-/// In normal mode conflicts cause an immediate error.  In dry-run mode all
-/// dependencies are processed and conflicts are returned in
-/// [`InstallOutcome::conflicts`] for the caller to report.
-///
-/// The caller is responsible for persisting the [`StateEntry`] into
-/// [`LocalState`].
-pub fn install(
+/// Set `force` to skip conflict checks.
+pub fn plan_install(
     dep: &ResolvedDependency,
     cache_dir: &Path,
     project_root: &Path,
     state: &LocalState,
-    options: &InstallOptions,
-) -> Result<InstallOutcome> {
+    force: bool,
+) -> Result<InstallPlan> {
     let pairs = collect_file_pairs(dep, cache_dir)?;
 
-    let conflicts = if options.force {
+    let conflicts = if force {
         Conflicts::default()
     } else {
         collect_conflicts(&pairs, project_root, state)?
     };
 
-    // In a real install, bail immediately so nothing is written.
-    if !options.dry_run && !conflicts.is_empty() {
-        bail!("{}", format_conflict_error(&conflicts));
-    }
-
-    // Separate pairs into those that need writing and those already up to date.
-    // A file is up to date when its on-disk content already matches the cache.
-    let (to_write, _): (Vec<_>, Vec<_>) = pairs.iter().partition(|(src, rel_dest)| {
-        let dest = project_root.join(rel_dest);
-        if !dest.exists() {
-            return true;
-        }
-        match (hash_file(src), hash_file(&dest)) {
-            (Ok(src_hash), Ok(dest_hash)) => src_hash != dest_hash,
-            _ => true, // Cannot verify; write to be safe.
-        }
-    });
-
-    let written = to_write.len();
-
-    // Build the state entry from all pairs using cache hashes as the source of
-    // truth. This covers both written files and already-up-to-date files so
-    // that stale-cleanup in a future sync can identify the full set.
+    // Build the state entry using cache hashes as the source of truth.
+    // This covers both to-write and already-up-to-date files so that a future
+    // cleanup can identify the full set owned by this dependency.
     let all_files: Vec<InstalledFile> = pairs
         .iter()
         .map(|(src, rel)| InstalledFile {
@@ -135,16 +115,115 @@ pub fn install(
         })
         .collect();
 
-    if !options.dry_run && !to_write.is_empty() {
-        let owned: Vec<(PathBuf, PathBuf)> = to_write.into_iter().cloned().collect();
-        stage_and_install(&owned, project_root)?;
-    }
+    // Determine which files actually need writing.
+    let to_write: Vec<(PathBuf, PathBuf)> = pairs
+        .into_iter()
+        .filter(|(src, rel_dest)| {
+            let dest = project_root.join(rel_dest);
+            if !dest.exists() {
+                return true;
+            }
+            match (hash_file(src), hash_file(&dest)) {
+                (Ok(sh), Ok(dh)) => sh != dh,
+                _ => true, // Cannot verify; write to be safe.
+            }
+        })
+        .collect();
 
-    Ok(InstallOutcome {
+    Ok(InstallPlan {
         entry: StateEntry { name: dep.dep.name.clone(), files: all_files },
-        written,
+        to_write,
         conflicts,
     })
+}
+
+/// Write the files described by `plan` to disk.
+///
+/// Should only be called when `plan.conflicts` is empty.
+pub fn execute_install(plan: &InstallPlan, project_root: &Path) -> Result<()> {
+    if !plan.to_write.is_empty() {
+        stage_and_install(&plan.to_write, project_root)?;
+    }
+    Ok(())
+}
+
+/// Compute which stale files should be removed and which are blocked by local
+/// modifications.
+///
+/// A stale file is one that the old state records as GGG-owned but that is
+/// absent from the new set of entries (dependency removed or map changed).
+///
+/// When `state_present` is `false` there is no old state to clean up from and
+/// the function returns an empty plan (printing a warning if needed).
+///
+/// Set `force` to move modified stale files into `to_remove` instead of
+/// `modified`.
+pub fn plan_cleanup(
+    old_state: &LocalState,
+    new_entries: &[StateEntry],
+    project_root: &Path,
+    state_present: bool,
+    force: bool,
+) -> Result<CleanupPlan> {
+    if !state_present {
+        if !old_state.entries.is_empty() {
+            eprintln!(
+                "warning: .ggg.state was not found; stale files from previous \
+                 installs cannot be identified and will not be removed. \
+                 Run `ggg sync` again to restore the state file."
+            );
+        }
+        return Ok(CleanupPlan { to_remove: vec![], modified: vec![] });
+    }
+
+    let new_paths: HashSet<&str> = new_entries
+        .iter()
+        .flat_map(|e| e.files.iter().map(|f| f.path.as_str()))
+        .collect();
+
+    let mut to_remove: Vec<(PathBuf, String)> = Vec::new();
+    let mut modified: Vec<String> = Vec::new();
+
+    for entry in &old_state.entries {
+        for file in &entry.files {
+            if new_paths.contains(file.path.as_str()) {
+                continue;
+            }
+
+            let abs = project_root
+                .join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+
+            if !abs.exists() {
+                continue;
+            }
+
+            let on_disk_hash = hash_file(&abs)
+                .with_context(|| format!("failed to hash {}", abs.display()))?;
+
+            if on_disk_hash != file.hash && !force {
+                modified.push(file.path.clone());
+            } else {
+                to_remove.push((abs, file.path.clone()));
+            }
+        }
+    }
+
+    Ok(CleanupPlan { to_remove, modified })
+}
+
+/// Delete the stale files listed in `plan` and prune empty directories.
+pub fn execute_cleanup(plan: &CleanupPlan, project_root: &Path) -> Result<()> {
+    let mut removed_dirs: Vec<PathBuf> = Vec::new();
+    for (abs, display) in &plan.to_remove {
+        std::fs::remove_file(abs)
+            .with_context(|| format!("failed to remove {}", display))?;
+        println!("  Removed {}", display);
+        if let Some(parent) = abs.parent() {
+            removed_dirs.push(parent.to_path_buf());
+        }
+    }
+    prune_empty_dirs(&removed_dirs, project_root);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +253,7 @@ fn collect_file_pairs(
                 let src = cache_dir.join(from);
 
                 if !src.exists() {
-                    bail!(
+                    anyhow::bail!(
                         "dependency {:?}: map entry `from = {:?}` does not exist in the cached tree",
                         dep.dep.name,
                         entry.from
@@ -279,28 +358,6 @@ fn collect_conflicts(
     Ok(conflicts)
 }
 
-/// Format a [`Conflicts`] value into the error string shown to the user.
-fn format_conflict_error(c: &Conflicts) -> String {
-    let mut msg = String::from("cannot install:");
-
-    if !c.modified.is_empty() {
-        msg.push_str("\n\n  The following files were installed by ggg but have been modified locally:");
-        for f in &c.modified {
-            msg.push_str(&format!("\n    {f}"));
-        }
-    }
-
-    if !c.unmanaged.is_empty() {
-        msg.push_str("\n\n  The following files already exist and are not under ggg's control:");
-        for f in &c.unmanaged {
-            msg.push_str(&format!("\n    {f}"));
-        }
-    }
-
-    msg.push_str("\n\nRun with --force to overwrite anyway, or restore the conflicting files first.");
-    msg
-}
-
 // ---------------------------------------------------------------------------
 // Staging and atomic rename into place
 // ---------------------------------------------------------------------------
@@ -379,6 +436,20 @@ fn stage_and_install(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Build a map from project-relative path key to absolute cache path for all
+/// files belonging to `dep`.  Used by `ggg diff` to locate the original
+/// version of a modified file.
+pub fn cache_file_map(
+    dep: &ResolvedDependency,
+    cache_dir: &Path,
+) -> Result<std::collections::HashMap<String, PathBuf>> {
+    let pairs = collect_file_pairs(dep, cache_dir)?;
+    Ok(pairs
+        .into_iter()
+        .map(|(cache_path, proj_path)| (path_key(&proj_path), cache_path))
+        .collect())
+}
+
 /// Hash the contents of `path` and return the lowercase hex SHA-256 digest.
 pub fn hash_file(path: &Path) -> Result<String> {
     let data = std::fs::read(path)
@@ -398,87 +469,6 @@ fn path_key(rel: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
-}
-
-// ---------------------------------------------------------------------------
-// Stale file removal
-// ---------------------------------------------------------------------------
-
-/// Remove files that the old state records as GGG-owned but that are absent
-/// from the new install (dependency removed, or its map changed).
-///
-/// A file is only deleted when its on-disk hash still matches the recorded
-/// hash (i.e. the user has not modified it).  Modified files are warned about
-/// and left in place unless `force` is set.
-///
-/// When `state_present` is `false` the old state was empty because no state
-/// file existed, so there is nothing to clean up and the function returns
-/// immediately.
-pub fn remove_stale(
-    old_state: &LocalState,
-    new_entries: &[StateEntry],
-    project_root: &Path,
-    state_present: bool,
-    force: bool,
-    dry_run: bool,
-) -> Result<()> {
-    if !state_present {
-        if !old_state.entries.is_empty() {
-            eprintln!(
-                "warning: .ggg.state was not found; stale files from previous \
-                 installs cannot be identified and will not be removed. \
-                 Run `ggg sync` again to restore the state file."
-            );
-        }
-        return Ok(());
-    }
-
-    let new_paths: HashSet<&str> = new_entries
-        .iter()
-        .flat_map(|e| e.files.iter().map(|f| f.path.as_str()))
-        .collect();
-
-    let mut removed_dirs: Vec<PathBuf> = Vec::new();
-
-    for entry in &old_state.entries {
-        for file in &entry.files {
-            if new_paths.contains(file.path.as_str()) {
-                continue;
-            }
-
-            let abs = project_root
-                .join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-
-            if !abs.exists() {
-                continue;
-            }
-
-            let on_disk_hash = hash_file(&abs)
-                .with_context(|| format!("failed to hash {}", abs.display()))?;
-
-            if on_disk_hash != file.hash && !force {
-                eprintln!("warning: leaving {} (modified since last install)", file.path);
-                continue;
-            }
-
-            if dry_run {
-                println!("  Would remove {}", file.path);
-            } else {
-                std::fs::remove_file(&abs)
-                    .with_context(|| format!("failed to remove {}", abs.display()))?;
-                println!("  Removed {}", file.path);
-                if let Some(parent) = abs.parent() {
-                    removed_dirs.push(parent.to_path_buf());
-                }
-            }
-        }
-    }
-
-    if !dry_run {
-        prune_empty_dirs(&removed_dirs, project_root);
-    }
-
-    Ok(())
 }
 
 /// Remove directories that became empty after stale file deletion, walking
@@ -577,20 +567,19 @@ mod tests {
         state
     }
 
-    fn plain() -> InstallOptions {
-        InstallOptions { dry_run: false, force: false }
-    }
-
-    /// Thin wrapper that discards the write count - most tests only care about
-    /// the returned StateEntry or whether an error occurred.
+    /// Plan and execute an install, returning the state entry.
+    /// Panics if the plan has conflicts.
     fn inst(
         dep: &ResolvedDependency,
         cache: &Path,
         project: &Path,
         state: &LocalState,
-        opts: &InstallOptions,
+        force: bool,
     ) -> Result<StateEntry> {
-        super::install(dep, cache, project, state, opts).map(|o| o.entry)
+        let plan = plan_install(dep, cache, project, state, force)?;
+        assert!(plan.conflicts.is_empty(), "unexpected conflicts in inst()");
+        execute_install(&plan, project)?;
+        Ok(plan.entry)
     }
 
     // --- file enumeration ---------------------------------------------------
@@ -605,7 +594,7 @@ mod tests {
         let entry = inst(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert_eq!(entry.files.len(), 2);
@@ -624,7 +613,7 @@ mod tests {
         let entry = inst(
             &make_dep("gut", Some(map)),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert_eq!(entry.files.len(), 1);
@@ -645,7 +634,7 @@ mod tests {
         inst(
             &make_dep("plugin", Some(map)),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert!(exists(project.path(),  "addons/myplugin/plugin.gd"));
@@ -662,7 +651,7 @@ mod tests {
         let entry = inst(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert_eq!(entry.files.len(), 1);
@@ -675,10 +664,10 @@ mod tests {
         let project = TempDir::new().unwrap();
 
         let map = vec![MapEntry { from: "nonexistent".to_string(), to: None }];
-        let result = inst(
+        let result = plan_install(
             &make_dep("dep", Some(map)),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         );
 
         assert!(result.is_err());
@@ -701,7 +690,7 @@ mod tests {
         inst(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert!(is_writable(project.path(), "plugin.gd"));
@@ -717,7 +706,7 @@ mod tests {
         let entry = inst(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert_eq!(entry.files.len(), 1);
@@ -734,7 +723,7 @@ mod tests {
         let entry = inst(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
 
         assert_eq!(entry.files[0].path, "addons/gut/gut.gd");
@@ -748,11 +737,13 @@ mod tests {
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
-        inst(
+        let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
+
+        assert!(plan.conflicts.is_empty());
     }
 
     #[test]
@@ -765,11 +756,13 @@ mod tests {
         write(cache.path(),   "plugin.gd", content);
         write(project.path(), "plugin.gd", content);
 
-        inst(
+        let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
+
+        assert!(plan.conflicts.is_empty());
     }
 
     #[test]
@@ -787,7 +780,7 @@ mod tests {
         inst(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &state, &plain(),
+            &state, false,
         ).unwrap();
 
         assert_eq!(read(project.path(), "plugin.gd"), new);
@@ -800,16 +793,15 @@ mod tests {
         write(cache.path(),   "plugin.gd", b"# dep content");
         write(project.path(), "plugin.gd", b"# user content");
 
-        let err = inst(
+        let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
-        ).unwrap_err();
+            &LocalState::default(), false,
+        ).unwrap();
 
-        let msg = err.to_string();
-        assert!(msg.contains("plugin.gd"),             "error should name the file");
-        assert!(msg.contains("--force"),               "error should suggest --force");
-        assert!(msg.contains("not under ggg's control"), "unmanaged file should say so");
+        assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()),
+            "should report unmanaged conflict");
+        assert!(plan.conflicts.modified.is_empty());
     }
 
     #[test]
@@ -821,13 +813,15 @@ mod tests {
         write(project.path(), "plugin.gd", b"# user modified");
         let state = state_owns("dep", "plugin.gd", b"# original ggg content");
 
-        let err = inst(
+        let plan = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &state, &plain(),
-        ).unwrap_err();
+            &state, false,
+        ).unwrap();
 
-        assert!(err.to_string().contains("modified locally"));
+        assert!(plan.conflicts.modified.contains(&"plugin.gd".to_string()),
+            "should report modified conflict");
+        assert!(plan.conflicts.unmanaged.is_empty());
     }
 
     #[test]
@@ -840,8 +834,7 @@ mod tests {
         inst(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(),
-            &InstallOptions { dry_run: false, force: true },
+            &LocalState::default(), true,
         ).unwrap();
 
         assert_eq!(read(project.path(), "plugin.gd"), b"# dep content");
@@ -857,22 +850,23 @@ mod tests {
         write(cache.path(), "addons/gut/util.gd", b"# util");
 
         // First install: both files should be written.
-        let outcome = super::install(
+        let first = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
-        assert_eq!(outcome.written, 2);
+        assert_eq!(first.to_write.len(), 2);
+        execute_install(&first, project.path()).unwrap();
 
         // Second install: content is identical, nothing should be written.
-        let outcome = super::install(
+        let second = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
-        assert_eq!(outcome.written, 0);
+        assert_eq!(second.to_write.len(), 0);
         // State entry still records all files.
-        assert_eq!(outcome.entry.files.len(), 2);
+        assert_eq!(second.entry.files.len(), 2);
     }
 
     #[test]
@@ -883,106 +877,64 @@ mod tests {
         write(cache.path(), "b.gd", b"# b");
 
         // First install - capture state so the second install knows ownership.
-        let first = super::install(
+        let first = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(), &plain(),
+            &LocalState::default(), false,
         ).unwrap();
+        execute_install(&first, project.path()).unwrap();
         let mut state = LocalState::default();
         state.upsert_entry(first.entry);
 
         // Simulate dep updating b.gd in the cache.
         write(cache.path(), "b.gd", b"# b updated");
 
-        let second = super::install(
+        let second = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &state, &plain(),
+            &state, false,
         ).unwrap();
-        assert_eq!(second.written, 1);
+        assert_eq!(second.to_write.len(), 1);
+        execute_install(&second, project.path()).unwrap();
         assert_eq!(read(project.path(), "b.gd"), b"# b updated");
     }
 
-    // --- dry run ------------------------------------------------------------
+    // --- plan only (no disk writes) -----------------------------------------
 
     #[test]
-    fn dry_run_writes_no_files() {
+    fn plan_only_writes_no_files() {
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
-        inst(
+        plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
-            &LocalState::default(),
-            &InstallOptions { dry_run: true, force: false },
+            &LocalState::default(), false,
         ).unwrap();
 
         assert!(!exists(project.path(), "plugin.gd"));
     }
 
     #[test]
-    fn dry_run_returns_correct_entry() {
+    fn plan_returns_correct_entry() {
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let content = b"# content";
         write(cache.path(), "addons/gut/gut.gd", content);
 
-        let entry = inst(
+        let plan = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
-            &LocalState::default(),
-            &InstallOptions { dry_run: true, force: false },
+            &LocalState::default(), false,
         ).unwrap();
 
-        assert_eq!(entry.files.len(), 1);
-        assert_eq!(entry.files[0].path, "addons/gut/gut.gd");
-        assert_eq!(entry.files[0].hash, content_hash(content));
+        assert_eq!(plan.entry.files.len(), 1);
+        assert_eq!(plan.entry.files[0].path, "addons/gut/gut.gd");
+        assert_eq!(plan.entry.files[0].hash, content_hash(content));
     }
 
-    #[test]
-    fn dry_run_reports_conflicts_without_erroring() {
-        // In dry-run mode conflicts are returned in the outcome rather than
-        // causing an immediate error, so all deps can be checked in one pass.
-        let cache   = TempDir::new().unwrap();
-        let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd", b"# dep content");
-        write(project.path(), "plugin.gd", b"# user content");
-
-        let outcome = super::install(
-            &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(),
-            &InstallOptions { dry_run: true, force: false },
-        ).unwrap();
-
-        assert!(!outcome.conflicts.unmanaged.is_empty(), "should report unmanaged conflict");
-        assert!(outcome.conflicts.modified.is_empty());
-        // No files should have been written.
-        assert!(!project.path().join("plugin.gd").exists() ||
-            std::fs::read(project.path().join("plugin.gd")).unwrap() == b"# user content");
-    }
-
-    #[test]
-    fn dry_run_reports_modified_conflicts() {
-        let cache   = TempDir::new().unwrap();
-        let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd", b"# new dep content");
-        write(project.path(), "plugin.gd", b"# user modified");
-        let state = state_owns("dep", "plugin.gd", b"# original ggg content");
-
-        let outcome = super::install(
-            &make_dep("dep", None),
-            cache.path(), project.path(),
-            &state,
-            &InstallOptions { dry_run: true, force: false },
-        ).unwrap();
-
-        assert!(!outcome.conflicts.modified.is_empty(), "should report modified conflict");
-        assert!(outcome.conflicts.unmanaged.is_empty());
-    }
-
-    // --- stale file removal -------------------------------------------------
+    // --- cleanup ------------------------------------------------------------
 
     #[test]
     fn stale_file_from_removed_dep_is_deleted() {
@@ -991,7 +943,8 @@ mod tests {
         write(project.path(), "addons/gut/gut.gd", content);
         let old_state = state_owns("gut", "addons/gut/gut.gd", content);
 
-        remove_stale(&old_state, &[], project.path(), true, false, false).unwrap();
+        let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
+        execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(!exists(project.path(), "addons/gut/gut.gd"));
     }
@@ -1003,39 +956,47 @@ mod tests {
         write(project.path(), "old/path/file.gd", content);
         let old_state = state_owns("dep", "old/path/file.gd", content);
 
-        // New install puts the same dep's file at a different path.
         let new_entries = vec![StateEntry {
-            name:  "dep".to_string(),
+            name: "dep".to_string(),
             files: vec![InstalledFile {
                 path: "new/path/file.gd".to_string(),
                 hash: content_hash(content),
             }],
         }];
 
-        remove_stale(&old_state, &new_entries, project.path(), true, false, false).unwrap();
+        let plan = plan_cleanup(&old_state, &new_entries, project.path(), true, false).unwrap();
+        execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(!exists(project.path(), "old/path/file.gd"));
     }
 
     #[test]
-    fn modified_stale_file_is_not_deleted_without_force() {
+    fn modified_stale_file_is_reported_as_conflict() {
         let project = TempDir::new().unwrap();
         write(project.path(), "plugin.gd", b"# user modified");
         let old_state = state_owns("dep", "plugin.gd", b"# original");
 
-        remove_stale(&old_state, &[], project.path(), true, false, false).unwrap();
+        let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
 
+        assert!(plan.modified.contains(&"plugin.gd".to_string()),
+            "modified stale file should be reported as a conflict");
+        assert!(plan.to_remove.is_empty());
+        // File must still be on disk - we did not execute.
         assert!(exists(project.path(), "plugin.gd"));
     }
 
     #[test]
-    fn force_deletes_modified_stale_file() {
+    fn force_moves_modified_stale_file_to_remove_list() {
         let project = TempDir::new().unwrap();
         write(project.path(), "plugin.gd", b"# user modified");
         let old_state = state_owns("dep", "plugin.gd", b"# original");
 
-        remove_stale(&old_state, &[], project.path(), true, true, false).unwrap();
+        let plan = plan_cleanup(&old_state, &[], project.path(), true, true).unwrap();
 
+        assert!(plan.modified.is_empty());
+        assert_eq!(plan.to_remove.len(), 1);
+
+        execute_cleanup(&plan, project.path()).unwrap();
         assert!(!exists(project.path(), "plugin.gd"));
     }
 
@@ -1044,8 +1005,9 @@ mod tests {
         let project  = TempDir::new().unwrap();
         let old_state = state_owns("dep", "plugin.gd", b"# content");
 
-        // File is not on disk - should succeed without error.
-        remove_stale(&old_state, &[], project.path(), true, false, false).unwrap();
+        // File is not on disk - plan should be empty, execute should succeed.
+        let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
+        execute_cleanup(&plan, project.path()).unwrap();
     }
 
     #[test]
@@ -1053,37 +1015,40 @@ mod tests {
         let project = TempDir::new().unwrap();
         write(project.path(), "plugin.gd", b"# some file");
 
-        remove_stale(
+        let plan = plan_cleanup(
             &LocalState::default(), &[], project.path(),
             false, // state_present = false
-            false, false,
+            false,
         ).unwrap();
+        execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(exists(project.path(), "plugin.gd"));
     }
 
     #[test]
-    fn empty_dirs_pruned_after_stale_removal() {
+    fn empty_dirs_pruned_after_cleanup() {
         let project = TempDir::new().unwrap();
         let content = b"# file";
         write(project.path(), "addons/gut/gut.gd", content);
         let old_state = state_owns("gut", "addons/gut/gut.gd", content);
 
-        remove_stale(&old_state, &[], project.path(), true, false, false).unwrap();
+        let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
+        execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(!exists(project.path(), "addons/gut"));
         assert!(!exists(project.path(), "addons"));
     }
 
     #[test]
-    fn non_empty_dirs_not_pruned() {
+    fn non_empty_dirs_not_pruned_after_cleanup() {
         let project = TempDir::new().unwrap();
         let content = b"# file";
         write(project.path(), "addons/gut/gut.gd",           content);
         write(project.path(), "addons/other/other.gd",       b"# other");
         let old_state = state_owns("gut", "addons/gut/gut.gd", content);
 
-        remove_stale(&old_state, &[], project.path(), true, false, false).unwrap();
+        let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
+        execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(!exists(project.path(), "addons/gut"));
         assert!(exists(project.path(),  "addons/other/other.gd"));
@@ -1091,13 +1056,14 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_stale_removal_writes_nothing() {
+    fn plan_cleanup_writes_nothing() {
         let project = TempDir::new().unwrap();
         let content = b"# file";
         write(project.path(), "plugin.gd", content);
         let old_state = state_owns("dep", "plugin.gd", content);
 
-        remove_stale(&old_state, &[], project.path(), true, false, true).unwrap();
+        // plan without execute must not touch disk.
+        plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
 
         assert!(exists(project.path(), "plugin.gd"));
     }
