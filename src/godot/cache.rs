@@ -20,8 +20,7 @@ use anyhow::{Context, Result, bail};
 
 use super::release::GodotRelease;
 
-/// Environment variable that overrides the default cache location.
-const CACHE_DIR_ENV_VAR: &str = "GGG_CACHE_DIR";
+use crate::cache::resolve_cache_root;
 
 /// Manages the on-disk cache of extracted Godot engine binaries.
 pub struct GodotCache {
@@ -41,12 +40,7 @@ impl GodotCache {
     ///
     /// Checks `GGG_CACHE_DIR` first, then falls back to the platform default.
     pub fn from_env() -> Result<Self> {
-        let base = if let Ok(dir) = std::env::var(CACHE_DIR_ENV_VAR) {
-            PathBuf::from(dir)
-        } else {
-            platform_default_cache_dir()?
-        };
-        Ok(Self::new(base))
+        Ok(Self::new(resolve_cache_root()?.join("godot")))
     }
 
     /// Returns `true` if this release is already extracted in the cache.
@@ -116,14 +110,6 @@ impl GodotCache {
     fn release_dir(&self, release: &GodotRelease) -> PathBuf {
         self.base.join(release.cache_key())
     }
-}
-
-// --- platform default ------------------------------------------------------
-
-fn platform_default_cache_dir() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir()
-        .context("could not determine the platform data directory")?;
-    Ok(data_dir.join("ggg").join("godot"))
 }
 
 // --- archive extraction ----------------------------------------------------
@@ -290,10 +276,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: this is a single-threaded test binary so mutating the
         // environment here cannot race with other threads.
-        unsafe { std::env::set_var(CACHE_DIR_ENV_VAR, dir.path()); }
+        unsafe { std::env::set_var(crate::cache::CACHE_DIR_ENV_VAR, dir.path()); }
         let cache = GodotCache::from_env().unwrap();
-        assert_eq!(cache.base, dir.path());
-        unsafe { std::env::remove_var(CACHE_DIR_ENV_VAR); }
+        // from_env appends "godot" to the cache root.
+        assert_eq!(cache.base, dir.path().join("godot"));
+        unsafe { std::env::remove_var(crate::cache::CACHE_DIR_ENV_VAR); }
     }
 
     #[test]

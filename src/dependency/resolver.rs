@@ -15,11 +15,14 @@ use gix::bstr::ByteSlice;
 use gix::progress::Discard;
 use gix::protocol::handshake::Ref;
 
-/// Resolve `rev` against `url` to a full commit SHA.
+use crate::config::Dependency;
+use crate::dependency::ResolvedDependency;
+
+/// Resolve `dep.rev` to a full commit SHA and return a [`ResolvedDependency`].
 ///
-/// If `rev` is already a 40-character hex string it is validated and returned
-/// without making a network connection. Otherwise the remote is queried and
-/// the matching ref is dereferenced to its commit SHA.
+/// If `dep.rev` is already a 40-character hex string it is validated and
+/// returned without making a network connection. Otherwise the remote is
+/// queried and the matching ref is dereferenced to its commit SHA.
 ///
 /// # No fetch guarantee
 ///
@@ -29,11 +32,14 @@ use gix::protocol::handshake::Ref;
 /// the moment of the call - the commit could be force-pushed away or the ref
 /// deleted before the subsequent fetch. The fetch step must handle these
 /// failure cases regardless.
-pub fn resolve(url: &str, rev: &str) -> Result<String> {
-    if looks_like_sha(rev) {
-        return Ok(rev.to_lowercase());
-    }
-    resolve_remote(url, rev)
+pub fn resolve(dep: &Dependency) -> Result<ResolvedDependency> {
+    let sha = if looks_like_sha(&dep.rev) {
+        dep.rev.to_lowercase()
+    } else {
+        resolve_remote(&dep.git, &dep.rev)
+            .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?
+    };
+    Ok(ResolvedDependency { dep: dep.clone(), sha })
 }
 
 // ---------------------------------------------------------------------------
@@ -141,18 +147,45 @@ fn list_remote_refs(url: &str) -> Result<Vec<Ref>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Dependency, MapEntry};
+
+    fn make_dep(git: &str, rev: &str) -> Dependency {
+        Dependency {
+            name: "test".into(),
+            git: git.into(),
+            rev: rev.into(),
+            map: None,
+        }
+    }
 
     #[test]
     fn sha_passthrough_lowercase() {
         let sha = "a".repeat(40);
-        assert_eq!(resolve("https://example.com/repo.git", &sha).unwrap(), sha);
+        let resolved = resolve(&make_dep("https://example.com/repo.git", &sha)).unwrap();
+        assert_eq!(resolved.sha, sha);
     }
 
     #[test]
     fn sha_passthrough_uppercase_normalised() {
         let upper = "A".repeat(40);
         let lower = "a".repeat(40);
-        assert_eq!(resolve("https://example.com/repo.git", &upper).unwrap(), lower);
+        let resolved = resolve(&make_dep("https://example.com/repo.git", &upper)).unwrap();
+        assert_eq!(resolved.sha, lower);
+    }
+
+    #[test]
+    fn sha_passthrough_preserves_dep_fields() {
+        let sha = "b".repeat(40);
+        let dep = Dependency {
+            name: "my-addon".into(),
+            git: "https://example.com/repo.git".into(),
+            rev: sha.clone(),
+            map: Some(vec![MapEntry { from: "addons/foo".into(), to: None }]),
+        };
+        let resolved = resolve(&dep).unwrap();
+        assert_eq!(resolved.sha, sha);
+        assert_eq!(resolved.dep.name, "my-addon");
+        assert!(resolved.dep.map.is_some());
     }
 
     #[test]
@@ -160,7 +193,7 @@ mod tests {
         // 39-char hex string is not a full SHA - must go through remote resolution,
         // which will fail trying to connect to a non-existent host.
         let short = "a".repeat(39);
-        let result = resolve("https://example.com/repo.git", &short);
+        let result = resolve(&make_dep("https://example.com/repo.git", &short));
         assert!(result.is_err());
     }
 

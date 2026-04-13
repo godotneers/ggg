@@ -1,3 +1,5 @@
+//! CLI command implementations, one module per subcommand.
+
 pub mod add;
 pub mod edit;
 pub mod init;

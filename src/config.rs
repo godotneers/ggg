@@ -53,7 +53,7 @@ pub struct Project {
 }
 
 /// One `[[dependency]]` entry - a single addon sourced from a git repository.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Dependency {
     /// Short identifier for this dependency, unique within the file.
     ///
@@ -96,7 +96,7 @@ pub struct Dependency {
 /// ```toml
 /// { from = "examples/", to = "examples/gut" }
 /// ```
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MapEntry {
     /// Path within the git repository (file or directory).
     pub from: String,
@@ -149,15 +149,40 @@ impl Config {
     /// Validation runs before any I/O, so an invalid config is rejected
     /// without touching the file.
     ///
-    /// Uses `toml_edit`'s pretty serialiser so the output is human-readable.
-    /// Note that this overwrites the file completely; to make surgical edits
-    /// while preserving comments, work with a `toml_edit::DocumentMut` directly
-    /// instead.
+    /// When writing to an existing file the `[[dependency]]` section is
+    /// spliced into the original `toml_edit` document so that comments and
+    /// formatting elsewhere in the file are preserved. For new files the
+    /// config is serialised fresh.
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        let content = toml_edit::ser::to_string_pretty(self)
+
+        // Always produce a fresh serialisation - this handles all field types
+        // (including `map` inline tables) without manual toml_edit construction.
+        let fresh = toml_edit::ser::to_string_pretty(self)
             .context("failed to serialize config")?;
-        std::fs::write(path, content)
+
+        if !path.exists() {
+            return std::fs::write(path, fresh)
+                .with_context(|| format!("failed to write {}", path.display()));
+        }
+
+        // Existing file: load the original document (preserving comments), then
+        // replace only the `dependency` section with the freshly serialised one.
+        let original = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let mut doc: toml_edit::DocumentMut = original
+            .parse()
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let fresh_doc: toml_edit::DocumentMut = fresh
+            .parse()
+            .context("internal error: freshly serialized config is not valid TOML")?;
+
+        doc.remove("dependency");
+        if let Some(deps) = fresh_doc.get("dependency") {
+            doc.insert("dependency", deps.clone());
+        }
+
+        std::fs::write(path, doc.to_string())
             .with_context(|| format!("failed to write {}", path.display()))
     }
 }
@@ -487,5 +512,74 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("gut"));
         // The file must not have been created.
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn save_preserves_comments_in_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ggg.toml");
+
+        std::fs::write(&path, "# top-level comment\n[project]\ngodot = \"4.3-stable\"\n").unwrap();
+
+        let mut config = Config::load(&path).unwrap();
+        config.dependency.push(Dependency {
+            name: "gut".into(),
+            git:  "https://github.com/bitwes/Gut.git".into(),
+            rev:  "v9.3.0".into(),
+            map:  None,
+        });
+        config.save(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# top-level comment"), "comment was stripped");
+    }
+
+    #[test]
+    fn save_appends_dependency_to_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ggg.toml");
+
+        std::fs::write(&path, "[project]\ngodot = \"4.3-stable\"\n").unwrap();
+
+        let mut config = Config::load(&path).unwrap();
+        config.dependency.push(Dependency {
+            name: "gut".into(),
+            git:  "https://github.com/bitwes/Gut.git".into(),
+            rev:  "v9.3.0".into(),
+            map:  None,
+        });
+        config.save(&path).unwrap();
+
+        let reloaded = Config::load(&path).unwrap();
+        assert_eq!(reloaded.dependency.len(), 1);
+        assert_eq!(reloaded.dependency[0].name, "gut");
+    }
+
+    #[test]
+    fn save_removes_dependency_from_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ggg.toml");
+
+        std::fs::write(&path, r#"[project]
+godot = "4.3-stable"
+
+[[dependency]]
+name = "gut"
+git  = "https://github.com/bitwes/Gut.git"
+rev  = "v9.3.0"
+
+[[dependency]]
+name = "phantom-camera"
+git  = "https://github.com/ramokz/phantom-camera.git"
+rev  = "main"
+"#).unwrap();
+
+        let mut config = Config::load(&path).unwrap();
+        config.dependency.retain(|d| d.name != "gut");
+        config.save(&path).unwrap();
+
+        let reloaded = Config::load(&path).unwrap();
+        assert_eq!(reloaded.dependency.len(), 1);
+        assert_eq!(reloaded.dependency[0].name, "phantom-camera");
     }
 }

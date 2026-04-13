@@ -24,7 +24,14 @@ enum Command {
     Init,
 
     /// Resolve and install all dependencies, download Godot if needed
-    Sync,
+    Sync {
+        /// Show what would be installed without writing any files
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite files even if they are not under ggg's control
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Open the project in the pinned Godot editor
     ///
@@ -46,10 +53,18 @@ enum Command {
         args: Vec<String>,
     },
 
-    /// Add a new dependency interactively
+    /// Add a new dependency
+    ///
+    /// The git URL may include an optional @rev suffix:
+    ///   ggg add https://github.com/user/repo.git@v1.0.0
+    ///
+    /// If the URL or revision are omitted you will be prompted for them.
     Add {
-        /// Git URL of the addon repository
-        git_url: String,
+        /// Git URL of the addon repository, optionally with @rev suffix
+        git_url: Option<String>,
+        /// Accept all inferred defaults without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Remove a dependency
@@ -76,10 +91,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Init                      => commands::init::run(),
-        Command::Sync                      => commands::sync::run(),
+        Command::Sync { dry_run, force }   => commands::sync::run(dry_run, force),
         Command::Edit { args }             => commands::edit::run(&args),
         Command::Run { args }              => commands::run::run(&args),
-        Command::Add { git_url }           => commands::add::run(&git_url),
+        Command::Add { git_url, yes }       => commands::add::run(git_url.as_deref(), yes),
         Command::Remove { name }           => commands::remove::run(&name),
         Command::SelfUpdate { command: _ } => anyhow::bail!("not yet implemented"),
     }

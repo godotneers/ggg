@@ -1,3 +1,9 @@
+//! Implementation of `ggg run`.
+//!
+//! Ensures the pinned Godot version is cached, then launches it against the
+//! current project. Any additional arguments are forwarded verbatim to the
+//! Godot process.
+
 use anyhow::Result;
 
 use crate::config::Config;
