@@ -75,7 +75,9 @@ impl Platform {
         match self {
             Self::LinuxX86_64   => &["_linux.x86_64.zip", "_x11.64.zip", "_linux.64.zip"],
             Self::MacOs         => &["_macos.universal.zip", "_osx.universal.zip", "_osx.fat.zip"],
-            Self::WindowsX86_64 => &["_win64.exe.zip"],
+            // Standard builds: Godot_v4.x-stable_win64.exe.zip
+            // Mono builds:     Godot_v4.x-stable_mono_win64.zip  (no .exe)
+            Self::WindowsX86_64 => &["_win64.exe.zip", "_win64.zip"],
         }
     }
 }
@@ -255,6 +257,29 @@ mod tests {
         let assets = make_assets(&["Godot_v3.5-stable_x11.64.zip"]);
         let url = select_asset(&assets, &release("3.5", "stable", false), Platform::LinuxX86_64).unwrap();
         assert!(url.contains("x11.64"));
+    }
+
+    #[test]
+    fn select_asset_picks_mono_windows_asset() {
+        // Mono Windows builds use _win64.zip, not _win64.exe.zip.
+        let assets = make_assets(&[
+            "Godot_v4.6-stable_win64.exe.zip",
+            "Godot_v4.6-stable_mono_win64.zip",
+        ]);
+        let url = select_asset(&assets, &release("4.6", "stable", true), Platform::WindowsX86_64).unwrap();
+        assert!(url.contains("mono"));
+        assert!(url.contains("win64.zip"));
+    }
+
+    #[test]
+    fn select_asset_picks_standard_windows_asset() {
+        let assets = make_assets(&[
+            "Godot_v4.6-stable_win64.exe.zip",
+            "Godot_v4.6-stable_mono_win64.zip",
+        ]);
+        let url = select_asset(&assets, &release("4.6", "stable", false), Platform::WindowsX86_64).unwrap();
+        assert!(!url.contains("mono"));
+        assert!(url.contains("win64.exe.zip"));
     }
 
     #[test]

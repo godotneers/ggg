@@ -70,7 +70,11 @@ pub struct Project {
     pub godot: GodotRelease,
 }
 
-/// One `[[dependency]]` entry - a single addon sourced from a git repository.
+/// One `[[dependency]]` entry - a single addon sourced from a git repository
+/// or a pre-built archive.
+///
+/// Exactly one of `git` or `url` must be set. Fields specific to one source
+/// type are invalid on the other and are rejected by [`Config::validate`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Dependency {
     /// Short identifier for this dependency, unique within the file.
@@ -78,23 +82,162 @@ pub struct Dependency {
     /// Used in CLI output, the lock file, and as the argument to `ggg remove`.
     pub name: String,
 
-    /// HTTPS or SSH URL of the git repository.
-    pub git: String,
+    // --- git source -----------------------------------------------------------
 
-    /// Tag, branch, or full commit SHA to check out.
-    ///
-    /// `ggg sync` resolves tags and branches to a commit SHA and records it
-    /// in `ggg.lock` so subsequent syncs are reproducible regardless of
-    /// upstream changes.
-    pub rev: String,
+    /// HTTPS or SSH URL of the git repository. Mutually exclusive with `url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
 
-    /// Path mappings that control which parts of the repository are installed
-    /// and where. When absent the entire repository is copied into the project
+    /// Tag, branch, or full commit SHA to check out. Required when `git` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+
+    // --- archive source -------------------------------------------------------
+
+    /// HTTPS URL of a pre-built archive (`.zip`, `.tar.gz`, `.tgz`).
+    /// Mutually exclusive with `git`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// Expected SHA-256 hex digest of the downloaded archive. Optional but
+    /// strongly recommended: verified against the download on every fetch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+
+    /// Number of leading path components to strip from archive entries before
+    /// writing to the cache, equivalent to `tar --strip-components`. Default 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strip_components: Option<u32>,
+
+    // --- common ---------------------------------------------------------------
+
+    /// Path mappings that control which parts of the source are installed
+    /// and where. When absent the entire tree is copied into the project
     /// root as-is.
     ///
     /// See [`MapEntry`] for the per-entry semantics.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map: Option<Vec<MapEntry>>,
+}
+
+/// The source kind of a [`Dependency`], obtained via [`Dependency::kind`].
+///
+/// Used by pipeline stages that need to branch on dep type (resolve, download,
+/// lock file lookup, cache key).
+pub enum DepKind<'a> {
+    /// Sourced from a git repository.
+    Git { git: &'a str, rev: &'a str },
+    /// Sourced from a pre-built archive URL.
+    Archive {
+        url: &'a str,
+        sha256: Option<&'a str>,
+        strip_components: u32,
+    },
+}
+
+impl Dependency {
+    /// Return which kind of source this dependency uses.
+    ///
+    /// Panics if the dependency has not been validated (i.e. has neither `git`
+    /// nor `url`, or has both). Always call [`Config::validate`] before using
+    /// this method.
+    pub fn kind(&self) -> DepKind<'_> {
+        match (&self.git, &self.url) {
+            (Some(git), None) => DepKind::Git {
+                git,
+                rev: self.rev.as_deref().expect("git dep missing rev (validate() not called)"),
+            },
+            (None, Some(url)) => DepKind::Archive {
+                url,
+                sha256: self.sha256.as_deref(),
+                strip_components: self.strip_components.unwrap_or(0),
+            },
+            _ => panic!("invalid dep {:?}: must have exactly one of git or url (call validate() first)", self.name),
+        }
+    }
+
+    /// Convenience constructor for a git dependency.
+    pub fn new_git(
+        name: impl Into<String>,
+        git: impl Into<String>,
+        rev: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            git: Some(git.into()),
+            rev: Some(rev.into()),
+            url: None,
+            sha256: None,
+            strip_components: None,
+            map: None,
+        }
+    }
+
+    /// Convenience constructor for an archive dependency.
+    pub fn new_archive(name: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            git: None,
+            rev: None,
+            url: Some(url.into()),
+            sha256: None,
+            strip_components: None,
+            map: None,
+        }
+    }
+
+    /// Validate the source fields of this single dependency entry.
+    fn validate_source(&self) -> Result<()> {
+        match (&self.git, &self.url) {
+            (Some(_), Some(_)) => anyhow::bail!(
+                "dependency {:?}: cannot have both 'git' and 'url'",
+                self.name
+            ),
+            (None, None) => anyhow::bail!(
+                "dependency {:?}: must have either 'git' or 'url'",
+                self.name
+            ),
+            (Some(_), None) => {
+                if self.rev.is_none() {
+                    anyhow::bail!(
+                        "dependency {:?}: 'git' dependencies require a 'rev' field",
+                        self.name
+                    );
+                }
+                if self.sha256.is_some() {
+                    anyhow::bail!(
+                        "dependency {:?}: 'sha256' is only valid for archive ('url') dependencies",
+                        self.name
+                    );
+                }
+                if self.strip_components.is_some() {
+                    anyhow::bail!(
+                        "dependency {:?}: 'strip_components' is only valid for archive ('url') dependencies",
+                        self.name
+                    );
+                }
+            }
+            (None, Some(url)) => {
+                if self.rev.is_some() {
+                    anyhow::bail!(
+                        "dependency {:?}: 'rev' is only valid for 'git' dependencies",
+                        self.name
+                    );
+                }
+                let supported = url.ends_with(".zip")
+                    || url.ends_with(".tar.gz")
+                    || url.ends_with(".tgz");
+                if !supported {
+                    anyhow::bail!(
+                        "dependency {:?}: unrecognised archive format in URL {:?}; \
+                         supported extensions: .zip, .tar.gz, .tgz",
+                        self.name, url
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One entry in a dependency's `map` array.
@@ -149,14 +292,17 @@ impl Config {
 
     /// Check that the config is internally consistent.
     ///
-    /// Currently enforces that all dependency names are unique, since `name`
-    /// is used as an identifier in CLI commands and the lock file.
+    /// Enforces:
+    /// - All dependency names are unique.
+    /// - Each dependency has exactly one source (`git` or `url`), with the
+    ///   correct accompanying fields.
     pub fn validate(&self) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         for dep in &self.dependency {
             if !seen.insert(&dep.name) {
                 anyhow::bail!("duplicate dependency name: \"{}\"", dep.name);
             }
+            dep.validate_source()?;
         }
         Ok(())
     }
@@ -253,7 +399,7 @@ mod tests {
         assert_eq!(config.dependency.len(), 1);
         let dep = &config.dependency[0];
         assert_eq!(dep.name, "gut");
-        assert_eq!(dep.rev,  "v9.3.0");
+        assert_eq!(dep.rev.as_deref(), Some("v9.3.0"));
         assert!(dep.map.is_none());
     }
 
@@ -320,6 +466,28 @@ mod tests {
         assert_eq!(config.dependency[1].name, "phantom-camera");
     }
 
+    #[test]
+    fn parse_archive_dependency() {
+        let config = parse(r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name             = "debug_draw_3d"
+            url              = "https://example.com/debug_draw_3d.zip"
+            sha256           = "abc123"
+            strip_components = 1
+            map              = [{ from = "addons/debug_draw_3d" }]
+        "#);
+        assert_eq!(config.dependency.len(), 1);
+        let dep = &config.dependency[0];
+        assert_eq!(dep.url.as_deref(), Some("https://example.com/debug_draw_3d.zip"));
+        assert_eq!(dep.sha256.as_deref(), Some("abc123"));
+        assert_eq!(dep.strip_components, Some(1));
+        assert!(dep.git.is_none());
+        assert!(dep.rev.is_none());
+    }
+
     // --- required field errors ---------------------------------------------
 
     #[test]
@@ -344,21 +512,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_missing_dependency_git_fails() {
-        let result = toml_edit::de::from_str::<Config>(r#"
+    fn validate_rejects_dep_with_neither_git_nor_url() {
+        let config = parse(r#"
             [project]
             godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
-            rev  = "v9.3.0"
         "#);
-        assert!(result.unwrap_err().to_string().contains("missing field `git`"));
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("git") || err.contains("url"), "err was: {err}");
     }
 
     #[test]
-    fn parse_missing_dependency_rev_fails() {
-        let result = toml_edit::de::from_str::<Config>(r#"
+    fn validate_rejects_git_dep_without_rev() {
+        let config = parse(r#"
             [project]
             godot = "4.3-stable"
 
@@ -366,7 +534,66 @@ mod tests {
             name = "gut"
             git  = "https://github.com/bitwes/Gut.git"
         "#);
-        assert!(result.unwrap_err().to_string().contains("missing field `rev`"));
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("rev"), "err was: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_git_dep_with_sha256() {
+        let config = parse(r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name   = "gut"
+            git    = "https://github.com/bitwes/Gut.git"
+            rev    = "main"
+            sha256 = "abc"
+        "#);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_archive_dep_with_rev() {
+        let config = parse(r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name = "foo"
+            url  = "https://example.com/foo.zip"
+            rev  = "main"
+        "#);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_dep_with_both_git_and_url() {
+        let config = parse(r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name = "foo"
+            git  = "https://example.com/foo.git"
+            rev  = "main"
+            url  = "https://example.com/foo.zip"
+        "#);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_archive_extension() {
+        let config = parse(r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name = "foo"
+            url  = "https://example.com/foo.rar"
+        "#);
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("extension") || err.contains("format"), "err was: {err}");
     }
 
     #[test]
@@ -476,16 +703,11 @@ mod tests {
         let original = Config {
             project: Project { godot: "4.3-stable".parse().unwrap() },
             sync: None,
-            dependency: vec![
-                Dependency {
-                    name: "gut".into(),
-                    git:  "https://github.com/bitwes/Gut.git".into(),
-                    rev:  "v9.3.0".into(),
-                    map:  Some(vec![
-                        MapEntry { from: "addons/gut".into(), to: None },
-                    ]),
-                },
-            ],
+            dependency: vec![{
+                let mut d = Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0");
+                d.map = Some(vec![MapEntry { from: "addons/gut".into(), to: None }]);
+                d
+            }],
         };
 
         original.save(&path).unwrap();
@@ -494,6 +716,7 @@ mod tests {
         assert_eq!(loaded.project.godot, "4.3-stable".parse::<GodotRelease>().unwrap());
         assert_eq!(loaded.dependency.len(), 1);
         assert_eq!(loaded.dependency[0].name, "gut");
+        assert_eq!(loaded.dependency[0].rev.as_deref(), Some("v9.3.0"));
         let map = loaded.dependency[0].map.as_ref().unwrap();
         assert_eq!(map[0].from, "addons/gut");
     }
@@ -513,18 +736,8 @@ mod tests {
             project: Project { godot: "4.3-stable".parse().unwrap() },
             sync: None,
             dependency: vec![
-                Dependency {
-                    name: "gut".into(),
-                    git:  "https://github.com/bitwes/Gut.git".into(),
-                    rev:  "v9.3.0".into(),
-                    map:  None,
-                },
-                Dependency {
-                    name: "gut".into(),
-                    git:  "https://github.com/bitwes/Gut.git".into(),
-                    rev:  "v9.3.1".into(),
-                    map:  None,
-                },
+                Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"),
+                Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.1"),
             ],
         };
 
@@ -542,12 +755,7 @@ mod tests {
         std::fs::write(&path, "# top-level comment\n[project]\ngodot = \"4.3-stable\"\n").unwrap();
 
         let mut config = Config::load(&path).unwrap();
-        config.dependency.push(Dependency {
-            name: "gut".into(),
-            git:  "https://github.com/bitwes/Gut.git".into(),
-            rev:  "v9.3.0".into(),
-            map:  None,
-        });
+        config.dependency.push(Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"));
         config.save(&path).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -562,12 +770,7 @@ mod tests {
         std::fs::write(&path, "[project]\ngodot = \"4.3-stable\"\n").unwrap();
 
         let mut config = Config::load(&path).unwrap();
-        config.dependency.push(Dependency {
-            name: "gut".into(),
-            git:  "https://github.com/bitwes/Gut.git".into(),
-            rev:  "v9.3.0".into(),
-            map:  None,
-        });
+        config.dependency.push(Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"));
         config.save(&path).unwrap();
 
         let reloaded = Config::load(&path).unwrap();

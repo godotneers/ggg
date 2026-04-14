@@ -35,11 +35,8 @@ mod tests {
         let config = Config {
             project: Project { godot: "4.3-stable".parse().unwrap() },
             sync: None,
-            dependency: deps.iter().map(|(name, git, rev)| Dependency {
-                name: name.to_string(),
-                git:  git.to_string(),
-                rev:  rev.to_string(),
-                map:  None,
+            dependency: deps.iter().map(|(name, git, rev)| {
+                Dependency::new_git(*name, *git, *rev)
             }).collect(),
         };
         config.save(path).unwrap();

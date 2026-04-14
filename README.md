@@ -1,6 +1,6 @@
 # Godot Goodie Grabber
 
-**Godot Goodie Grabber** is a project manager for [Godot](https://godotengine.org/) games, inspired by [uv](https://github.com/astral-sh/uv) for Python. It pins a specific Godot version per project, manages asset dependencies from git sources, and provides a unified CLI to sync, edit, and run your project - so you never have to manually wrangle engine versions or addon installations again.
+**Godot Goodie Grabber** is a project manager for [Godot](https://godotengine.org/) games, inspired by [uv](https://github.com/astral-sh/uv) for Python. It pins a specific Godot version per project, manages asset dependencies from git repositories and pre-built archives, and provides a unified CLI to sync, edit, and run your project - so you never have to manually wrangle engine versions or addon installations again.
 
 ## Motivation
 
@@ -17,16 +17,15 @@ Each project has a `ggg.toml` at its root:
 godot = "4.3.0"          # Godot version to use for this project
 
 [[dependency]]
-name   = "gut"
-git    = "https://github.com/bitwes/Gut.git"
-rev    = "v9.3.0"        # tag, branch, or commit SHA
-target = "addons/gut"    # where inside the project to install it
+name = "gut"
+git  = "https://github.com/bitwes/Gut.git"
+rev  = "v9.3.0"        # tag, branch, or commit SHA
 
 [[dependency]]
-name   = "phantom-camera"
-git    = "https://github.com/ramokz/phantom-camera.git"
-rev    = "main"
-target = "addons/phantom_camera"
+name = "phantom-camera"
+git  = "https://github.com/ramokz/phantom-camera.git"
+rev  = "main"
+map  = [{ from = "addons/phantom_camera" }]
 ```
 
 ### Godot version management
@@ -35,18 +34,20 @@ Godot Goodie Grabber downloads and caches Godot binaries keyed by version, simil
 
 ### Dependency installation
 
-Dependencies are plain git repositories. Godot Goodie Grabber checks them out (sparse or full, depending on the `target` path) into a local cache and links or copies the relevant subtree into the project. A `ggg.lock` file records the exact commit SHAs that were resolved, ensuring reproducible installs.
+Dependencies are git repositories or pre-built archives (zip, tar.gz). Godot Goodie Grabber fetches them into a shared local cache and copies the relevant files into the project. A `ggg.lock` file records the exact commit SHAs or archive hashes that were resolved, ensuring reproducible installs.
 
 ## Commands
 
 ```
-ggg init              Create a ggg.toml in the current directory
-ggg sync              Resolve and install all dependencies, download Godot if needed
-ggg edit              Open the project in the pinned Godot editor
-ggg run [-- <args>]   Run Godot against the project, forwarding extra arguments
-ggg add <git-url>     Add a new dependency interactively
-ggg remove <name>     Remove a dependency
-ggg self update       Update Godot Goodie Grabber itself
+ggg init                    Create a ggg.toml in the current directory
+ggg sync                    Resolve and install all dependencies, download Godot if needed
+ggg diff [<file>]           Show changes made to installed dependency files
+ggg edit                    Open the project in the pinned Godot editor
+ggg run [<args>]            Run Godot against the project, forwarding extra arguments
+ggg add git <url>[@rev]     Add a git dependency
+ggg add archive <url>       Add an archive dependency (zip, tar.gz)
+ggg remove <name>           Remove a dependency
+ggg self update             Update Godot Goodie Grabber itself
 ```
 
 ## Workflow example
@@ -58,7 +59,7 @@ ggg sync                            # installs Godot 4.3.0 + all addons
 
 # Day-to-day development
 ggg edit                            # opens editor at the right version
-ggg run -- --headless --export-release linux build/game.x86_64
+ggg run --headless --export-release linux build/game.x86_64
 
 # Onboarding a teammate
 git clone https://github.com/your-org/your-game.git

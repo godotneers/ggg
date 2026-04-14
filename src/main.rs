@@ -1,8 +1,4 @@
-mod commands;
-mod utils;
-use ggg::config;
-use ggg::dependency;
-use ggg::godot;
+use ggg::commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -56,17 +52,12 @@ enum Command {
 
     /// Add a new dependency
     ///
-    /// The git URL may include an optional @rev suffix:
-    ///   ggg add https://github.com/user/repo.git@v1.0.0
+    /// Use `ggg add git <url>[@rev]` for git repositories or
+    /// `ggg add archive <url>` for pre-built archives (.zip, .tar.gz, .tgz).
     ///
-    /// If the URL or revision are omitted you will be prompted for them.
-    Add {
-        /// Git URL of the addon repository, optionally with @rev suffix
-        git_url: Option<String>,
-        /// Accept all inferred defaults without prompting
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
+    /// Bare `ggg add <url>` auto-detects the type from the URL extension.
+    #[command(subcommand)]
+    Add(AddCommand),
 
     /// Remove a dependency
     Remove {
@@ -99,6 +90,43 @@ enum SelfCommand {
     Update,
 }
 
+#[derive(Subcommand)]
+enum AddCommand {
+    /// Add a git repository dependency
+    ///
+    /// The URL may include an optional @rev suffix:
+    ///   ggg add git https://github.com/user/repo.git@v1.0.0
+    Git {
+        /// Git URL, optionally with @rev suffix
+        url: Option<String>,
+        /// Accept all inferred defaults without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Add a pre-built archive dependency (.zip, .tar.gz, .tgz)
+    Archive {
+        /// Archive URL
+        url: Option<String>,
+        /// Dependency name (required; prompted if absent)
+        #[arg(long)]
+        name: Option<String>,
+        /// Strip N leading path components from archive entries
+        #[arg(long)]
+        strip_components: Option<u32>,
+        /// Expected SHA-256 hex digest; verified on download
+        #[arg(long)]
+        sha256: Option<String>,
+    },
+
+    /// Add a dependency, auto-detecting type from the URL
+    ///
+    /// Routes to `git` if the URL looks like a git remote, `archive` if it
+    /// ends in a recognised archive extension, or prompts if ambiguous.
+    #[command(external_subcommand)]
+    Url(Vec<String>),
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -106,7 +134,16 @@ fn main() -> Result<()> {
         Command::Sync { dry_run, force }   => commands::sync::run(dry_run, force),
         Command::Edit { args }             => commands::edit::run(&args),
         Command::Run { args }              => commands::run::run(&args),
-        Command::Add { git_url, yes }       => commands::add::run(git_url.as_deref(), yes),
+        Command::Add(add_cmd) => match add_cmd {
+            AddCommand::Git { url, yes } =>
+                commands::add::run_git(url.as_deref(), yes),
+            AddCommand::Archive { url, name, strip_components, sha256 } =>
+                commands::add::run_archive(url.as_deref(), name.as_deref(), strip_components, sha256.as_deref()),
+            AddCommand::Url(args) => match args.first().map(String::as_str) {
+                Some(url) => commands::add::run_bare(url, false),
+                None      => commands::add::run_git(None, false),
+            },
+        },
         Command::Remove { name }           => commands::remove::run(&name),
         Command::Diff { file }             => commands::diff::run(file.as_deref()),
         Command::SelfUpdate { command: _ } => anyhow::bail!("not yet implemented"),

@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 use super::release::GodotRelease;
 
@@ -82,7 +82,9 @@ impl GodotCache {
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create cache directory {}", dir.display()))?;
 
-        extract_zip(archive, &dir)?;
+        crate::utils::archive::scan_zip(archive)
+            .with_context(|| format!("Godot archive contains unsafe paths - refusing to extract"))?;
+        crate::utils::archive::extract_zip(archive, &dir)?;
 
         let executable = find_executable(&dir)?;
 
@@ -112,53 +114,6 @@ impl GodotCache {
     }
 }
 
-// --- archive extraction ----------------------------------------------------
-
-fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
-    let file = std::fs::File::open(archive)
-        .with_context(|| format!("failed to open archive {}", archive.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .with_context(|| format!("failed to read zip archive {}", archive.display()))?;
-
-    for i in 0..zip.len() {
-        let mut entry = zip.by_index(i)
-            .with_context(|| format!("failed to read zip entry {i}"))?;
-
-        // Skip macOS metadata directories that zip sometimes includes.
-        if entry.name().contains("__MACOSX") {
-            continue;
-        }
-
-        // Zip slip check: reject any entry whose path contains a `..`
-        // component. This is simpler and more reliable than canonicalize,
-        // which requires the path to already exist on disk.
-        if entry.name().split('/').any(|c| c == "..") {
-            bail!(
-                "refusing to extract '{}': path escapes the destination directory",
-                entry.name()
-            );
-        }
-
-        let entry_path = destination.join(entry.name());
-
-        if entry.is_dir() {
-            std::fs::create_dir_all(&entry_path)
-                .with_context(|| format!("failed to create directory {}", entry_path.display()))?;
-        } else {
-            if let Some(parent) = entry_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create directory {}", parent.display()))?;
-            }
-            let mut dest_file = std::fs::File::create(&entry_path)
-                .with_context(|| format!("failed to create file {}", entry_path.display()))?;
-            std::io::copy(&mut entry, &mut dest_file)
-                .with_context(|| format!("failed to extract {}", entry_path.display()))?;
-        }
-    }
-
-    Ok(())
-}
-
 // --- executable selection --------------------------------------------------
 
 /// Find the Godot executable within an extracted release directory.
@@ -166,26 +121,42 @@ fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
 /// On Windows, Godot ships two executables: a standard one and a console
 /// variant (name contains `_console`). We always prefer the non-console one.
 /// On Linux and macOS there is only one executable.
+///
+/// Searches up to two levels deep because the Windows mono zip wraps
+/// everything in a single subdirectory (e.g. `Godot_v4.6-stable_mono_win64/`)
+/// while the standard Windows zip places the exe directly at the root.
 fn find_executable(dir: &Path) -> Result<PathBuf> {
-    let candidates: Vec<PathBuf> = std::fs::read_dir(dir)
-        .with_context(|| format!("failed to read cache directory {}", dir.display()))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| is_godot_executable(p))
-        .collect();
+    let candidates = collect_executables(dir, 2);
 
     match candidates.len() {
         0 => bail!("no Godot executable found in {}", dir.display()),
         1 => Ok(candidates.into_iter().next().unwrap()),
         _ => {
-            // Multiple candidates means we're on Windows with both the normal
-            // and console executables present. Prefer the non-console one.
+            // Multiple candidates: prefer the non-console one.
             candidates
                 .into_iter()
                 .find(|p| !is_console_executable(p))
                 .context("could not find a non-console Godot executable")
         }
     }
+}
+
+/// Collect all Godot executables within `dir`, searching up to `depth` levels.
+fn collect_executables(dir: &Path, depth: usize) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return result,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() && is_godot_executable(&path) {
+            result.push(path);
+        } else if path.is_dir() && depth > 1 {
+            result.extend(collect_executables(&path, depth - 1));
+        }
+    }
+    result
 }
 
 /// Returns `true` if the path looks like a Godot executable.
@@ -295,10 +266,10 @@ mod tests {
     }
 
     #[test]
-    fn extract_zip_rejects_path_traversal() {
+    fn install_rejects_archive_with_path_traversal() {
         use std::io::Write;
 
-        // Build a zip in memory with a path traversal entry.
+        // Build a zip with a path traversal entry.
         let mut buf = std::io::Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut buf);
@@ -307,17 +278,41 @@ mod tests {
             writer.finish().unwrap();
         }
 
-        // Write the zip to a temp file.
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("evil.zip");
         std::fs::write(&archive_path, buf.into_inner()).unwrap();
 
-        // Create the extraction destination.
-        let dest = dir.path().join("extracted");
-        std::fs::create_dir_all(&dest).unwrap();
+        let (_cache_dir, cache) = make_cache();
+        let release = stable("4.3");
+        let result = cache.install(&release, &archive_path);
+        assert!(result.is_err());
+    }
 
-        let result = extract_zip(&archive_path, &dest);
-        assert!(result.unwrap_err().to_string().contains("path escapes"));
+    #[test]
+    fn find_executable_finds_exe_in_subdirectory() {
+        // Mono Windows zips wrap everything in a folder, e.g.
+        // Godot_v4.6-stable_mono_win64/Godot_v4.6-stable_mono_win64.exe
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("Godot_v4.6-stable_mono_win64");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("Godot_v4.6-stable_mono_win64.exe"), b"").unwrap();
+        std::fs::write(sub.join("Godot_v4.6-stable_mono_win64_console.exe"), b"").unwrap();
+
+        let exe = find_executable(dir.path()).unwrap();
+        assert!(exe.to_string_lossy().contains("mono_win64.exe"));
+        assert!(!exe.to_string_lossy().contains("console"));
+    }
+
+    #[test]
+    fn find_executable_finds_exe_at_root() {
+        // Standard Windows zips place the exe directly at the root.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Godot_v4.6-stable_win64.exe"), b"").unwrap();
+        std::fs::write(dir.path().join("Godot_v4.6-stable_win64_console.exe"), b"").unwrap();
+
+        let exe = find_executable(dir.path()).unwrap();
+        assert!(exe.to_string_lossy().contains("win64.exe"));
+        assert!(!exe.to_string_lossy().contains("console"));
     }
 
     #[test]

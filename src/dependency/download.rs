@@ -27,7 +27,8 @@ use crate::dependency::ResolvedDependency;
 /// The caller is responsible for moving the directory into the dependency
 /// cache and for cleaning it up on error.
 pub fn download_dependency(dep: &ResolvedDependency) -> Result<PathBuf> {
-    let url = &dep.dep.git;
+    let url = dep.dep.git.as_deref()
+        .expect("download_dependency called on non-git dependency");
     let sha = &dep.sha;
     let name = &dep.dep.name;
 

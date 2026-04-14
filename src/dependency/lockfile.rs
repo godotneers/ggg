@@ -13,6 +13,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config::DepKind;
 use crate::dependency::ResolvedDependency;
 
 // ---------------------------------------------------------------------------
@@ -28,20 +29,34 @@ pub struct LockFile {
 }
 
 /// One dependency record inside `ggg.lock`.
+///
+/// Git entries have `git`, `rev`, and `sha` set.
+/// Archive entries have `url` and `archive_sha` set.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LockEntry {
     /// Matches the `name` field in `ggg.toml`.
     pub name: String,
+
+    // --- git dep fields ---
     /// The git URL from `ggg.toml`.
-    pub git: String,
-    /// The `rev` value from `ggg.toml` (branch, tag, or SHA) at the time this
-    /// entry was written. Together with `name` and `git` this forms the lock
-    /// key: if any of the three change, the entry no longer applies and the
-    /// dependency must be re-resolved to restore reproducibility.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub rev: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+    /// The `rev` from `ggg.toml`. Together with `name` and `git` forms the
+    /// lock key: any change forces a fresh resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
     /// Resolved 40-character lowercase hex commit SHA.
-    pub sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+
+    // --- archive dep fields ---
+    /// The archive URL from `ggg.toml`. Together with `name` forms the lock
+    /// key: any URL change forces a fresh download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// SHA-256 hex digest of the downloaded archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_sha: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,13 +84,28 @@ impl LockFile {
             .with_context(|| format!("failed to write {}", path.display()))
     }
 
-    /// Insert or update the entry for `dep`.
+    /// Insert or update the lock entry for `dep`.
+    ///
+    /// Branches on dep type: git deps write `git`/`rev`/`sha`; archive deps
+    /// write `url`/`archive_sha`.
     pub fn upsert(&mut self, dep: &ResolvedDependency) {
-        let entry = LockEntry {
-            name: dep.dep.name.clone(),
-            git:  dep.dep.git.clone(),
-            rev:  dep.dep.rev.clone(),
-            sha:  dep.sha.clone(),
+        let entry = match dep.dep.kind() {
+            DepKind::Git { git, rev } => LockEntry {
+                name:        dep.dep.name.clone(),
+                git:         Some(git.to_owned()),
+                rev:         Some(rev.to_owned()),
+                sha:         Some(dep.sha.clone()),
+                url:         None,
+                archive_sha: None,
+            },
+            DepKind::Archive { url, .. } => LockEntry {
+                name:        dep.dep.name.clone(),
+                git:         None,
+                rev:         None,
+                sha:         None,
+                url:         Some(url.to_owned()),
+                archive_sha: Some(dep.sha.clone()),
+            },
         };
         match self.entries.iter_mut().find(|e| e.name == dep.dep.name) {
             Some(existing) => *existing = entry,
@@ -83,18 +113,31 @@ impl LockFile {
         }
     }
 
-    /// Look up a locked SHA for a dependency.
+    /// Look up a locked commit SHA for a git dependency.
     ///
-    /// Returns the SHA only when `name`, `git`, and `rev` all match. This is
-    /// the reproducibility guarantee: as long as the dependency is unchanged in
-    /// `ggg.toml`, every sync installs the same commit. Any change to the
-    /// dependency invalidates the lock entry and forces a fresh resolution,
-    /// after which the new SHA is written back to the lock file.
+    /// Returns the SHA only when `name`, `git`, and `rev` all match. Any
+    /// change to the dependency in `ggg.toml` invalidates the entry and forces
+    /// a fresh resolution.
     pub fn locked_sha(&self, name: &str, git: &str, rev: &str) -> Option<&str> {
         self.entries
             .iter()
-            .find(|e| e.name == name && e.git == git && e.rev == rev)
-            .map(|e| e.sha.as_str())
+            .find(|e| {
+                e.name == name
+                    && e.git.as_deref() == Some(git)
+                    && e.rev.as_deref() == Some(rev)
+            })
+            .and_then(|e| e.sha.as_deref())
+    }
+
+    /// Look up a locked archive SHA for an archive dependency.
+    ///
+    /// Returns the SHA only when `name` and `url` both match. A URL change in
+    /// `ggg.toml` invalidates the entry and forces a fresh download.
+    pub fn locked_archive_sha(&self, name: &str, url: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| e.name == name && e.url.as_deref() == Some(url))
+            .and_then(|e| e.archive_sha.as_deref())
     }
 
     /// Remove the entry for the dependency with the given `name`, if present.
@@ -120,13 +163,15 @@ mod tests {
 
     fn make_resolved_rev(name: &str, rev: &str, sha: &str) -> ResolvedDependency {
         ResolvedDependency {
-            dep: Dependency {
-                name: name.to_string(),
-                git:  "https://example.com/repo.git".to_string(),
-                rev:  rev.to_string(),
-                map:  None,
-            },
+            dep: Dependency::new_git(name, "https://example.com/repo.git", rev),
             sha: sha.to_string(),
+        }
+    }
+
+    fn make_resolved_archive(name: &str, url: &str, archive_sha: &str) -> ResolvedDependency {
+        ResolvedDependency {
+            dep: Dependency::new_archive(name, url),
+            sha: archive_sha.to_string(),
         }
     }
 
@@ -143,7 +188,7 @@ mod tests {
         lock.upsert(&make_resolved("gut", &"a".repeat(40)));
         assert_eq!(lock.entries.len(), 1);
         assert_eq!(lock.entries[0].name, "gut");
-        assert_eq!(lock.entries[0].sha,  "a".repeat(40));
+        assert_eq!(lock.entries[0].sha.as_deref(), Some("a".repeat(40).as_str()));
     }
 
     #[test]
@@ -152,7 +197,23 @@ mod tests {
         lock.upsert(&make_resolved("gut", &"a".repeat(40)));
         lock.upsert(&make_resolved("gut", &"b".repeat(40)));
         assert_eq!(lock.entries.len(), 1);
-        assert_eq!(lock.entries[0].sha, "b".repeat(40));
+        assert_eq!(lock.entries[0].sha.as_deref(), Some("b".repeat(40).as_str()));
+    }
+
+    #[test]
+    fn upsert_archive_dep() {
+        let mut lock = LockFile::default();
+        let archive_sha = "e3b0c44298fc1c149afbf4c8996fb924".repeat(2);
+        lock.upsert(&make_resolved_archive(
+            "debug_draw_3d",
+            "https://example.com/debug_draw_3d.zip",
+            &archive_sha,
+        ));
+        assert_eq!(lock.entries.len(), 1);
+        assert_eq!(lock.entries[0].url.as_deref(), Some("https://example.com/debug_draw_3d.zip"));
+        assert_eq!(lock.entries[0].archive_sha.as_deref(), Some(archive_sha.as_str()));
+        assert!(lock.entries[0].git.is_none());
+        assert!(lock.entries[0].sha.is_none());
     }
 
     #[test]
@@ -209,6 +270,28 @@ mod tests {
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[0].name, "gut");
         assert_eq!(loaded.entries[1].name, "phantom");
-        assert_eq!(loaded.entries[1].sha,  "b".repeat(40));
+        assert_eq!(loaded.entries[1].sha.as_deref(), Some("b".repeat(40).as_str()));
+    }
+
+    #[test]
+    fn locked_archive_sha_returns_sha_when_match() {
+        let mut lock = LockFile::default();
+        let archive_sha = "e3b0c44298fc1c149afbf4c8996fb924".repeat(2);
+        lock.upsert(&make_resolved_archive(
+            "foo",
+            "https://example.com/foo.zip",
+            &archive_sha,
+        ));
+        assert_eq!(
+            lock.locked_archive_sha("foo", "https://example.com/foo.zip"),
+            Some(archive_sha.as_str()),
+        );
+    }
+
+    #[test]
+    fn locked_archive_sha_returns_none_when_url_changed() {
+        let mut lock = LockFile::default();
+        lock.upsert(&make_resolved_archive("foo", "https://example.com/foo_v1.zip", &"a".repeat(64)));
+        assert!(lock.locked_archive_sha("foo", "https://example.com/foo_v2.zip").is_none());
     }
 }

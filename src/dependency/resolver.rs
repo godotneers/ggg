@@ -33,10 +33,15 @@ use crate::dependency::ResolvedDependency;
 /// deleted before the subsequent fetch. The fetch step must handle these
 /// failure cases regardless.
 pub fn resolve(dep: &Dependency) -> Result<ResolvedDependency> {
-    let sha = if looks_like_sha(&dep.rev) {
-        dep.rev.to_lowercase()
+    let git = dep.git.as_deref()
+        .expect("resolver::resolve() called on non-git dependency; check dep type first");
+    let rev = dep.rev.as_deref()
+        .expect("resolver::resolve() called on dep without rev; validate() not called");
+
+    let sha = if looks_like_sha(rev) {
+        rev.to_lowercase()
     } else {
-        resolve_remote(&dep.git, &dep.rev)
+        resolve_remote(git, rev)
             .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?
     };
     Ok(ResolvedDependency { dep: dep.clone(), sha })
@@ -150,12 +155,7 @@ mod tests {
     use crate::config::{Dependency, MapEntry};
 
     fn make_dep(git: &str, rev: &str) -> Dependency {
-        Dependency {
-            name: "test".into(),
-            git: git.into(),
-            rev: rev.into(),
-            map: None,
-        }
+        Dependency::new_git("test", git, rev)
     }
 
     #[test]
@@ -176,12 +176,8 @@ mod tests {
     #[test]
     fn sha_passthrough_preserves_dep_fields() {
         let sha = "b".repeat(40);
-        let dep = Dependency {
-            name: "my-addon".into(),
-            git: "https://example.com/repo.git".into(),
-            rev: sha.clone(),
-            map: Some(vec![MapEntry { from: "addons/foo".into(), to: None }]),
-        };
+        let mut dep = Dependency::new_git("my-addon", "https://example.com/repo.git", &sha);
+        dep.map = Some(vec![MapEntry { from: "addons/foo".into(), to: None }]);
         let resolved = resolve(&dep).unwrap();
         assert_eq!(resolved.sha, sha);
         assert_eq!(resolved.dep.name, "my-addon");

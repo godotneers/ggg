@@ -41,6 +41,7 @@ use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 
+use crate::config::DepKind;
 use crate::dependency::ResolvedDependency;
 use crate::dependency::state::{InstalledFile, LocalState, StateEntry};
 
@@ -237,50 +238,82 @@ pub fn execute_cleanup(plan: &CleanupPlan, project_root: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Build the list of `(absolute_cache_source, project_relative_destination)`
-/// pairs to install, honouring the `map` field in the dependency config.
+/// pairs to install, honouring the `strip_components` and `map` fields in the
+/// dependency config.
+///
+/// For archive dependencies `strip_components` is applied first (on the
+/// cache-relative virtual paths), then the `map` entries are matched against
+/// the post-strip paths.  For git dependencies `strip_components` is always 0.
 fn collect_file_pairs(
     dep: &ResolvedDependency,
     cache_dir: &Path,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let mut pairs = Vec::new();
+    let n_strip = match dep.dep.kind() {
+        DepKind::Archive { strip_components, .. } => strip_components,
+        DepKind::Git { .. } => 0,
+    };
+
+    // Collect all files from the cache with their cache-relative paths.
+    let mut raw: Vec<(PathBuf, PathBuf)> = Vec::new();
+    collect_recursive(cache_dir, Path::new(""), &mut raw)
+        .with_context(|| format!("failed to enumerate cache for {:?}", dep.dep.name))?;
+
+    // Apply strip_components to produce the virtual (post-strip) relative paths.
+    let stripped: Vec<(PathBuf, PathBuf)> = raw
+        .into_iter()
+        .filter_map(|(abs, rel)| Some((abs, strip_rel_path(&rel, n_strip)?)))
+        .collect();
 
     match &dep.dep.map {
-        None => {
-            // No map: install the full tree at the project root, preserving
-            // the directory structure from the cache.
-            collect_recursive(cache_dir, Path::new(""), &mut pairs)
-                .with_context(|| format!("failed to enumerate cache for {:?}", dep.dep.name))?;
-        }
+        None => Ok(stripped),
         Some(map_entries) => {
+            let mut pairs = Vec::new();
+
             for entry in map_entries {
                 let from = Path::new(&entry.from);
                 // `to` defaults to `from` when absent.
                 let to = entry.to.as_deref().map(Path::new).unwrap_or(from);
-                let src = cache_dir.join(from);
 
-                if !src.exists() {
+                let mut matched = false;
+                for (abs, virtual_rel) in &stripped {
+                    if virtual_rel == from {
+                        // Exact file match.
+                        matched = true;
+                        pairs.push((abs.clone(), to.to_path_buf()));
+                    } else if let Ok(rest) = virtual_rel.strip_prefix(from) {
+                        // `from` is a directory prefix; keep the remainder
+                        // under `to`.
+                        matched = true;
+                        pairs.push((abs.clone(), to.join(rest)));
+                    }
+                }
+
+                if !matched {
                     anyhow::bail!(
                         "dependency {:?}: map entry `from = {:?}` does not exist in the cached tree",
                         dep.dep.name,
                         entry.from
                     );
                 }
-
-                if src.is_dir() {
-                    collect_recursive(&src, to, &mut pairs).with_context(|| {
-                        format!(
-                            "failed to enumerate {:?} for dependency {:?}",
-                            entry.from, dep.dep.name
-                        )
-                    })?;
-                } else {
-                    pairs.push((src, to.to_path_buf()));
-                }
             }
+
+            Ok(pairs)
         }
     }
+}
 
-    Ok(pairs)
+/// Strip `n` leading path components from `path`. Returns `None` if the path
+/// has `n` or fewer components (the entry is entirely within the stripped
+/// prefix and should be skipped).
+fn strip_rel_path(path: &Path, n: u32) -> Option<PathBuf> {
+    if n == 0 {
+        return Some(path.to_path_buf());
+    }
+    let comps: Vec<_> = path.components().collect();
+    if comps.len() <= n as usize {
+        return None;
+    }
+    Some(comps[n as usize..].iter().collect())
 }
 
 /// Recursively enumerate files under `current`, recording them in `pairs` as
@@ -543,15 +576,16 @@ mod tests {
     // --- helpers ------------------------------------------------------------
 
     fn make_dep(name: &str, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
-        ResolvedDependency {
-            dep: Dependency {
-                name:  name.to_string(),
-                git:   "https://example.com/repo.git".to_string(),
-                rev:   "main".to_string(),
-                map,
-            },
-            sha: "a".repeat(40),
-        }
+        let mut dep = Dependency::new_git(name, "https://example.com/repo.git", "main");
+        dep.map = map;
+        ResolvedDependency { dep, sha: "a".repeat(40) }
+    }
+
+    fn make_archive_dep(name: &str, strip: u32, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
+        let mut dep = Dependency::new_archive(name, "https://example.com/archive.zip");
+        dep.strip_components = if strip == 0 { None } else { Some(strip) };
+        dep.map = map;
+        ResolvedDependency { dep, sha: "abc123".into() }
     }
 
     /// Write `content` to `<dir>/<rel>`, creating parents as needed.
@@ -1161,5 +1195,88 @@ mod tests {
         plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
 
         assert!(exists(project.path(), "plugin.gd"));
+    }
+
+    // --- strip_components at install time ------------------------------------
+
+    #[test]
+    fn strip_components_one_strips_wrapper_dir() {
+        // Archive cache has a wrapper directory; strip_components = 1 should
+        // remove it so files land directly at the post-strip paths.
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "wrapper/addons/gut/gut.gd",  b"# gut");
+        write(cache.path(), "wrapper/addons/gut/util.gd", b"# util");
+
+        let entry = inst(
+            &make_archive_dep("gut", 1, None),
+            cache.path(), project.path(),
+            &LocalState::default(), false,
+        ).unwrap();
+
+        assert_eq!(entry.files.len(), 2);
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
+        assert!(exists(project.path(), "addons/gut/util.gd"));
+        assert!(!exists(project.path(), "wrapper"));
+    }
+
+    #[test]
+    fn strip_components_skips_entries_entirely_within_stripped_prefix() {
+        // A file living exactly at the stripped prefix level (e.g. a top-level
+        // README inside the wrapper) should be silently skipped.
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "wrapper/README.md",         b"# readme");
+        write(cache.path(), "wrapper/addons/gut/gut.gd", b"# gut");
+
+        inst(
+            &make_archive_dep("gut", 1, None),
+            cache.path(), project.path(),
+            &LocalState::default(), false,
+        ).unwrap();
+
+        // README.md is at depth 1 inside the wrapper; after stripping it
+        // becomes "README.md" and should be installed.
+        assert!(exists(project.path(), "README.md"));
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
+    }
+
+    #[test]
+    fn strip_then_map_uses_post_strip_paths() {
+        // strip_components = 1 removes "wrapper/"; the map `from` is written
+        // in terms of post-strip paths.
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "wrapper/addons/gut/gut.gd", b"# gut");
+        write(cache.path(), "wrapper/other/ignored.gd",  b"# ignored");
+
+        let map = vec![MapEntry { from: "addons/gut".into(), to: Some("addons/my_gut".into()) }];
+        inst(
+            &make_archive_dep("gut", 1, Some(map)),
+            cache.path(), project.path(),
+            &LocalState::default(), false,
+        ).unwrap();
+
+        assert!(exists(project.path(),  "addons/my_gut/gut.gd"));
+        assert!(!exists(project.path(), "addons/gut/gut.gd"));
+        assert!(!exists(project.path(), "wrapper"));
+        assert!(!exists(project.path(), "other/ignored.gd"));
+    }
+
+    #[test]
+    fn strip_rel_path_zero_is_identity() {
+        let p = PathBuf::from("a/b/c.txt");
+        assert_eq!(strip_rel_path(&p, 0), Some(p));
+    }
+
+    #[test]
+    fn strip_rel_path_one() {
+        let result = strip_rel_path(Path::new("wrapper/addons/gut.gd"), 1).unwrap();
+        assert_eq!(result, PathBuf::from("addons/gut.gd"));
+    }
+
+    #[test]
+    fn strip_rel_path_returns_none_for_shallow_entries() {
+        assert!(strip_rel_path(Path::new("wrapper"), 1).is_none());
     }
 }

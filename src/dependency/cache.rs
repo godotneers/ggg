@@ -32,6 +32,7 @@ use gix::bstr::ByteSlice;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::config::DepKind;
 use crate::dependency::ResolvedDependency;
 
 /// Filename written into every cache entry for human inspection.
@@ -70,7 +71,7 @@ impl DependencyCache {
         dir.is_dir() && dir.read_dir().map_or(false, |mut d| d.next().is_some())
     }
 
-    /// Extract the exported tree of `dep` from the bare repository at
+    /// Extract the exported tree of a git `dep` from the bare repository at
     /// `repo_path` into the cache.
     ///
     /// Files with the `export-ignore` gitattribute are excluded. All written
@@ -89,12 +90,15 @@ impl DependencyCache {
             return Ok(dest);
         }
 
+        let DepKind::Git { git, .. } = dep.dep.kind() else {
+            anyhow::bail!("cache::install() called on non-git dependency {:?}", dep.dep.name);
+        };
+
+        let hash_dir = self.base.join(url_hash(&normalize_url(git)));
         let tmp_dir = tempfile::Builder::new()
             .prefix(".install-")
-            .tempdir_in(&self.base.join(url_hash(&normalize_url(&dep.dep.git))))
+            .tempdir_in(&hash_dir)
             .or_else(|_| {
-                // The url-hash directory may not exist yet - create it first.
-                let hash_dir = self.base.join(url_hash(&normalize_url(&dep.dep.git)));
                 std::fs::create_dir_all(&hash_dir)
                     .with_context(|| format!("failed to create cache directory {}", hash_dir.display()))?;
                 tempfile::Builder::new()
@@ -107,7 +111,7 @@ impl DependencyCache {
         extract_tree(dep, repo_path, tmp_dir.path())
             .with_context(|| format!("failed to extract tree for {:?}", dep.dep.name))?;
 
-        write_metadata(dep, tmp_dir.path())
+        write_git_metadata(dep, tmp_dir.path())
             .context("failed to write dependency metadata")?;
 
         // Atomic rename into final position.
@@ -120,6 +124,44 @@ impl DependencyCache {
         Ok(dest)
     }
 
+    /// Download and install an archive dependency into the cache.
+    ///
+    /// Creates a temp directory inside the cache hash directory (ensuring same
+    /// filesystem for an atomic rename), delegates the download and extraction
+    /// to [`super::archive`], then renames the result into the final cache
+    /// position keyed by the archive SHA-256.
+    ///
+    /// Returns the archive SHA-256 (the cache key / lock file entry).
+    pub fn install_archive(&self, dep: &crate::config::Dependency) -> Result<String> {
+        let DepKind::Archive { url, .. } = dep.kind() else {
+            anyhow::bail!("cache::install_archive() called on non-archive dependency {:?}", dep.name);
+        };
+
+        let hash_dir = self.base.join(url_hash(url));
+        std::fs::create_dir_all(&hash_dir)
+            .with_context(|| format!("failed to create cache directory {}", hash_dir.display()))?;
+
+        let tmp_dir = tempfile::Builder::new()
+            .prefix(".install-")
+            .tempdir_in(&hash_dir)
+            .context("failed to create temporary install directory")?;
+
+        let archive_sha = super::archive::download_and_extract(dep, tmp_dir.path())
+            .with_context(|| format!("failed to download/extract {:?}", dep.name))?;
+
+        let dest = hash_dir.join(&archive_sha);
+        if dest.is_dir() {
+            // Another process raced us to the same version; our download is redundant.
+            return Ok(archive_sha);
+        }
+
+        std::fs::rename(tmp_dir.path(), &dest)
+            .with_context(|| format!("failed to move archive install into cache at {}", dest.display()))?;
+        let _ = tmp_dir.keep();
+
+        Ok(archive_sha)
+    }
+
     /// The directory where a dependency's cached files are stored.
     ///
     /// The returned path may not exist if the dependency has not been installed
@@ -129,9 +171,14 @@ impl DependencyCache {
     }
 
     fn dep_dir(&self, dep: &ResolvedDependency) -> PathBuf {
-        self.base
-            .join(url_hash(&normalize_url(&dep.dep.git)))
-            .join(&dep.sha)
+        match dep.dep.kind() {
+            DepKind::Git { git, .. } => self.base
+                .join(url_hash(&normalize_url(git)))
+                .join(&dep.sha),
+            DepKind::Archive { url, .. } => self.base
+                .join(url_hash(url)) // no normalization for archive URLs
+                .join(&dep.sha),
+        }
     }
 }
 
@@ -296,26 +343,20 @@ fn write_blob(
 // Metadata file
 // ---------------------------------------------------------------------------
 
-/// Contents of the `.ggg_dep_info.toml` written into every cache entry.
+/// Contents of the `.ggg_dep_info.toml` written into a git dep cache entry.
 #[derive(Serialize)]
-struct DepInfo<'a> {
-    /// Human-readable dependency name from `ggg.toml`.
+struct GitDepInfo<'a> {
     name: &'a str,
-    /// Original git URL from `ggg.toml`.
-    git: &'a str,
-    /// The rev label from `ggg.toml` (branch, tag, or SHA).
-    rev: &'a str,
-    /// Resolved 40-character commit SHA stored in the cache.
-    sha: &'a str,
+    git:  &'a str,
+    rev:  &'a str,
+    sha:  &'a str,
 }
 
-fn write_metadata(dep: &ResolvedDependency, dest: &Path) -> Result<()> {
-    let info = DepInfo {
-        name: &dep.dep.name,
-        git:  &dep.dep.git,
-        rev:  &dep.dep.rev,
-        sha:  &dep.sha,
+fn write_git_metadata(dep: &ResolvedDependency, dest: &Path) -> Result<()> {
+    let DepKind::Git { git, rev } = dep.dep.kind() else {
+        anyhow::bail!("write_git_metadata called on non-git dep");
     };
+    let info = GitDepInfo { name: &dep.dep.name, git, rev, sha: &dep.sha };
     let content = toml_edit::ser::to_string_pretty(&info)
         .context("failed to serialize dependency metadata")?;
     let path = dest.join(METADATA_FILE);
@@ -339,12 +380,7 @@ mod tests {
 
     fn resolved(git: &str, sha: &str) -> ResolvedDependency {
         ResolvedDependency {
-            dep: crate::config::Dependency {
-                name: "test".into(),
-                git:  git.into(),
-                rev:  "main".into(),
-                map:  None,
-            },
+            dep: crate::config::Dependency::new_git("test", git, "main"),
             sha: sha.into(),
         }
     }
