@@ -2,6 +2,8 @@
 name = "ggg"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/godotneers/ggg"
 
 [dependencies]
 anyhow = "1"
@@ -24,3 +26,8 @@ globset = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

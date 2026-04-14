@@ -75,19 +75,6 @@ enum Command {
         /// Show the diff for a specific file only
         file: Option<String>,
     },
-
-    /// Update Godot Goodie Grabber itself
-    #[command(name = "self")]
-    SelfUpdate {
-        #[command(subcommand)]
-        command: SelfCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum SelfCommand {
-    /// Download and install the latest release
-    Update,
 }
 
 #[derive(Subcommand)]
@@ -146,6 +133,5 @@ fn main() -> Result<()> {
         },
         Command::Remove { name }           => commands::remove::run(&name),
         Command::Diff { file }             => commands::diff::run(file.as_deref()),
-        Command::SelfUpdate { command: _ } => anyhow::bail!("not yet implemented"),
     }
 }
