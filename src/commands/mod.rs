@@ -4,6 +4,7 @@ pub mod add;
 pub mod diff;
 pub mod edit;
 pub mod init;
+pub mod ls_dep;
 pub mod remove;
 pub mod run;
 pub mod sync;

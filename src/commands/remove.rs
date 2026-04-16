@@ -14,11 +14,11 @@ pub fn run(name: &str) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
     let mut config = Config::load(ggg_toml)?;
 
-    if !config.dependency.iter().any(|d| d.name == name) {
+    if !config.has_dependency(name) {
         bail!("no dependency named {:?} found in ggg.toml", name);
     }
 
-    config.dependency.retain(|d| d.name != name);
+    config.remove_dependency(name);
     config.save(ggg_toml)?;
 
     println!("Removed {name:?} from ggg.toml.");

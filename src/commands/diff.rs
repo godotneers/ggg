@@ -17,7 +17,7 @@ use crate::dependency::cache::DependencyCache;
 use crate::dependency::install::cache_file_map;
 use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{LocalState, STATE_FILE};
-use crate::utils::plan::{build_plan, SyncPlan};
+use crate::utils::plan::{resolve_and_plan, SyncPlan};
 
 pub fn run(file: Option<&str>) -> Result<()> {
     let project_root = std::env::current_dir()
@@ -34,7 +34,7 @@ pub fn run(file: Option<&str>) -> Result<()> {
     let filter: Option<String> = file.map(|f| f.replace('\\', "/"));
 
     let SyncPlan { works, .. } =
-        build_plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, false)?;
+        resolve_and_plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, false)?;
 
     let use_color = std::io::stdout().is_terminal()
         && std::env::var_os("NO_COLOR").is_none();

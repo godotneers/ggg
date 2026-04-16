@@ -9,7 +9,7 @@
 //!
 //! # Flow
 //!
-//! 1. **Plan phase** - delegates to [`crate::utils::plan::build_plan`], which
+//! 1. **Plan phase** - delegates to [`crate::utils::plan::resolve_and_plan`], which
 //!    resolves and downloads all dependencies and calls [`plan_install`] /
 //!    [`plan_cleanup`] without writing anything to disk.
 //! 2. **Check** - if any plan has conflicts, or if `--dry-run` was given,
@@ -28,7 +28,7 @@ use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{LocalState, STATE_FILE};
 use crate::godot::cache::GodotCache;
 use crate::godot::engine;
-use crate::utils::plan::{build_plan, DepWork, SyncPlan};
+use crate::utils::plan::{resolve_and_plan, DepWork, SyncPlan};
 
 use super::init::ensure_gitignore_entry;
 
@@ -47,7 +47,7 @@ pub fn run(dry_run: bool, force: bool) -> Result<()> {
     let dep_cache = DependencyCache::from_env()?;
 
     let SyncPlan { works, cleanup } =
-        build_plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, force)?;
+        resolve_and_plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, force)?;
 
     // -------------------------------------------------------------------------
     // Check: any conflicts or --dry-run -> print the plan and stop.

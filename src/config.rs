@@ -83,7 +83,6 @@ pub struct Dependency {
     pub name: String,
 
     // --- git source -----------------------------------------------------------
-
     /// HTTPS or SSH URL of the git repository. Mutually exclusive with `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<String>,
@@ -93,7 +92,6 @@ pub struct Dependency {
     pub rev: Option<String>,
 
     // --- archive source -------------------------------------------------------
-
     /// HTTPS URL of a pre-built archive (`.zip`, `.tar.gz`, `.tgz`).
     /// Mutually exclusive with `git`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,7 +108,6 @@ pub struct Dependency {
     pub strip_components: Option<u32>,
 
     // --- common ---------------------------------------------------------------
-
     /// Path mappings that control which parts of the source are installed
     /// and where. When absent the entire tree is copied into the project
     /// root as-is.
@@ -145,14 +142,20 @@ impl Dependency {
         match (&self.git, &self.url) {
             (Some(git), None) => DepKind::Git {
                 git,
-                rev: self.rev.as_deref().expect("git dep missing rev (validate() not called)"),
+                rev: self
+                    .rev
+                    .as_deref()
+                    .expect("git dep missing rev (validate() not called)"),
             },
             (None, Some(url)) => DepKind::Archive {
                 url,
                 sha256: self.sha256.as_deref(),
                 strip_components: self.strip_components.unwrap_or(0),
             },
-            _ => panic!("invalid dep {:?}: must have exactly one of git or url (call validate() first)", self.name),
+            _ => panic!(
+                "invalid dep {:?}: must have exactly one of git or url (call validate() first)",
+                self.name
+            ),
         }
     }
 
@@ -224,14 +227,14 @@ impl Dependency {
                         self.name
                     );
                 }
-                let supported = url.ends_with(".zip")
-                    || url.ends_with(".tar.gz")
-                    || url.ends_with(".tgz");
+                let supported =
+                    url.ends_with(".zip") || url.ends_with(".tar.gz") || url.ends_with(".tgz");
                 if !supported {
                     anyhow::bail!(
                         "dependency {:?}: unrecognised archive format in URL {:?}; \
                          supported extensions: .zip, .tar.gz, .tgz",
-                        self.name, url
+                        self.name,
+                        url
                     );
                 }
             }
@@ -267,7 +270,6 @@ pub struct MapEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
 }
-
 
 impl Config {
     /// Read and deserialise a `ggg.toml` file from `path`, then validate it.
@@ -322,8 +324,7 @@ impl Config {
 
         // Always produce a fresh serialisation - this handles all field types
         // (including `map` inline tables) without manual toml_edit construction.
-        let fresh = toml_edit::ser::to_string_pretty(self)
-            .context("failed to serialize config")?;
+        let fresh = toml_edit::ser::to_string_pretty(self).context("failed to serialize config")?;
 
         if !path.exists() {
             return std::fs::write(path, fresh)
@@ -349,8 +350,23 @@ impl Config {
         std::fs::write(path, doc.to_string())
             .with_context(|| format!("failed to write {}", path.display()))
     }
-}
 
+    /// Find a dependency by its name.
+    pub fn get_dependency(&self, name: &str) -> Option<&Dependency> {
+        self.dependency.iter().find(|dep| dep.name == name)
+    }
+
+    /// Removes a dependency with the given name if it exists. Otherwise does
+    /// nothing.
+    pub fn remove_dependency(&mut self, name: &str) {
+        self.dependency.retain(|dep| dep.name != name);
+    }
+
+    /// Returns true if the config has a dependency with the given name.
+    pub fn has_dependency(&self, name: &str) -> bool {
+        self.dependency.iter().any(|dep| dep.name == name)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -375,18 +391,24 @@ mod tests {
     #[test]
     fn parse_minimal_config() {
         // A config with only [project] and no dependencies is valid.
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
-        "#);
+        "#,
+        );
 
-        assert_eq!(config.project.godot, "4.3-stable".parse::<GodotRelease>().unwrap());
+        assert_eq!(
+            config.project.godot,
+            "4.3-stable".parse::<GodotRelease>().unwrap()
+        );
         assert!(config.dependency.is_empty());
     }
 
     #[test]
     fn parse_dependency_without_map() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -394,7 +416,8 @@ mod tests {
             name = "gut"
             git  = "https://github.com/bitwes/Gut.git"
             rev  = "v9.3.0"
-        "#);
+        "#,
+        );
 
         assert_eq!(config.dependency.len(), 1);
         let dep = &config.dependency[0];
@@ -406,7 +429,8 @@ mod tests {
     #[test]
     fn parse_dependency_with_symmetric_map() {
         // When `to` is omitted, the entry is still valid - the field is None.
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -415,7 +439,8 @@ mod tests {
             git  = "https://github.com/bitwes/Gut.git"
             rev  = "v9.3.0"
             map  = [{ from = "addons/gut" }]
-        "#);
+        "#,
+        );
 
         let map = config.dependency[0].map.as_ref().unwrap();
         assert_eq!(map.len(), 1);
@@ -425,7 +450,8 @@ mod tests {
 
     #[test]
     fn parse_dependency_with_renamed_map() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -437,7 +463,8 @@ mod tests {
                 { from = "addons/gut" },
                 { from = "examples/", to = "examples/gut" },
             ]
-        "#);
+        "#,
+        );
 
         let map = config.dependency[0].map.as_ref().unwrap();
         assert_eq!(map.len(), 2);
@@ -447,7 +474,8 @@ mod tests {
 
     #[test]
     fn parse_multiple_dependencies() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -460,7 +488,8 @@ mod tests {
             name = "phantom-camera"
             git  = "https://github.com/ramokz/phantom-camera.git"
             rev  = "v0.8"
-        "#);
+        "#,
+        );
 
         assert_eq!(config.dependency.len(), 2);
         assert_eq!(config.dependency[1].name, "phantom-camera");
@@ -468,7 +497,8 @@ mod tests {
 
     #[test]
     fn parse_archive_dependency() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -478,10 +508,14 @@ mod tests {
             sha256           = "abc123"
             strip_components = 1
             map              = [{ from = "addons/debug_draw_3d" }]
-        "#);
+        "#,
+        );
         assert_eq!(config.dependency.len(), 1);
         let dep = &config.dependency[0];
-        assert_eq!(dep.url.as_deref(), Some("https://example.com/debug_draw_3d.zip"));
+        assert_eq!(
+            dep.url.as_deref(),
+            Some("https://example.com/debug_draw_3d.zip")
+        );
         assert_eq!(dep.sha256.as_deref(), Some("abc123"));
         assert_eq!(dep.strip_components, Some(1));
         assert!(dep.git.is_none());
@@ -492,55 +526,74 @@ mod tests {
 
     #[test]
     fn parse_missing_godot_field_fails() {
-        let result = toml_edit::de::from_str::<Config>(r#"
+        let result = toml_edit::de::from_str::<Config>(
+            r#"
             [project]
-        "#);
-        assert!(result.unwrap_err().to_string().contains("missing field `godot`"));
+        "#,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing field `godot`")
+        );
     }
 
     #[test]
     fn parse_missing_dependency_name_fails() {
-        let result = toml_edit::de::from_str::<Config>(r#"
+        let result = toml_edit::de::from_str::<Config>(
+            r#"
             [project]
             godot = "4.3-stable"
 
             [[dependency]]
             git = "https://github.com/bitwes/Gut.git"
             rev = "v9.3.0"
-        "#);
-        assert!(result.unwrap_err().to_string().contains("missing field `name`"));
+        "#,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing field `name`")
+        );
     }
 
     #[test]
     fn validate_rejects_dep_with_neither_git_nor_url() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
-        "#);
+        "#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("git") || err.contains("url"), "err was: {err}");
     }
 
     #[test]
     fn validate_rejects_git_dep_without_rev() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
             [[dependency]]
             name = "gut"
             git  = "https://github.com/bitwes/Gut.git"
-        "#);
+        "#,
+        );
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("rev"), "err was: {err}");
     }
 
     #[test]
     fn validate_rejects_git_dep_with_sha256() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -549,13 +602,15 @@ mod tests {
             git    = "https://github.com/bitwes/Gut.git"
             rev    = "main"
             sha256 = "abc"
-        "#);
+        "#,
+        );
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_archive_dep_with_rev() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -563,13 +618,15 @@ mod tests {
             name = "foo"
             url  = "https://example.com/foo.zip"
             rev  = "main"
-        "#);
+        "#,
+        );
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_dep_with_both_git_and_url() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -578,27 +635,34 @@ mod tests {
             git  = "https://example.com/foo.git"
             rev  = "main"
             url  = "https://example.com/foo.zip"
-        "#);
+        "#,
+        );
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_unknown_archive_extension() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
             [[dependency]]
             name = "foo"
             url  = "https://example.com/foo.rar"
-        "#);
+        "#,
+        );
         let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("extension") || err.contains("format"), "err was: {err}");
+        assert!(
+            err.contains("extension") || err.contains("format"),
+            "err was: {err}"
+        );
     }
 
     #[test]
     fn parse_missing_map_entry_from_fails() {
-        let result = toml_edit::de::from_str::<Config>(r#"
+        let result = toml_edit::de::from_str::<Config>(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -607,15 +671,22 @@ mod tests {
             git  = "https://github.com/bitwes/Gut.git"
             rev  = "v9.3.0"
             map  = [{ to = "addons/gut" }]
-        "#);
-        assert!(result.unwrap_err().to_string().contains("missing field `from`"));
+        "#,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing field `from`")
+        );
     }
 
     // --- validation --------------------------------------------------------
 
     #[test]
     fn validate_rejects_duplicate_dependency_names() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -628,14 +699,16 @@ mod tests {
             name = "gut"
             git  = "https://github.com/bitwes/Gut.git"
             rev  = "v9.3.1"
-        "#);
+        "#,
+        );
 
         assert!(config.validate().unwrap_err().to_string().contains("gut"));
     }
 
     #[test]
     fn validate_accepts_unique_dependency_names() {
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -648,7 +721,8 @@ mod tests {
             name = "phantom-camera"
             git  = "https://github.com/ramokz/phantom-camera.git"
             rev  = "v0.8"
-        "#);
+        "#,
+        );
 
         assert!(config.validate().is_ok());
     }
@@ -659,7 +733,8 @@ mod tests {
     fn absent_map_is_not_serialized() {
         // Optional fields set to None must not appear in the output at all,
         // so the written file stays clean and round-trips back correctly.
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -667,7 +742,8 @@ mod tests {
             name = "gut"
             git  = "https://github.com/bitwes/Gut.git"
             rev  = "v9.3.0"
-        "#);
+        "#,
+        );
 
         let output = serialize(&config);
         assert!(!output.contains("map"));
@@ -676,7 +752,8 @@ mod tests {
     #[test]
     fn absent_map_entry_to_is_not_serialized() {
         // Same principle for the `to` field inside a map entry.
-        let config = parse(r#"
+        let config = parse(
+            r#"
             [project]
             godot = "4.3-stable"
 
@@ -685,7 +762,8 @@ mod tests {
             git  = "https://github.com/bitwes/Gut.git"
             rev  = "v9.3.0"
             map  = [{ from = "addons/gut" }]
-        "#);
+        "#,
+        );
 
         let output = serialize(&config);
         assert!(!output.contains("to ="));
@@ -701,11 +779,17 @@ mod tests {
         let path = dir.path().join("ggg.toml");
 
         let original = Config {
-            project: Project { godot: "4.3-stable".parse().unwrap() },
+            project: Project {
+                godot: "4.3-stable".parse().unwrap(),
+            },
             sync: None,
             dependency: vec![{
-                let mut d = Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0");
-                d.map = Some(vec![MapEntry { from: "addons/gut".into(), to: None }]);
+                let mut d =
+                    Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0");
+                d.map = Some(vec![MapEntry {
+                    from: "addons/gut".into(),
+                    to: None,
+                }]);
                 d
             }],
         };
@@ -713,7 +797,10 @@ mod tests {
         original.save(&path).unwrap();
         let loaded = Config::load(&path).unwrap();
 
-        assert_eq!(loaded.project.godot, "4.3-stable".parse::<GodotRelease>().unwrap());
+        assert_eq!(
+            loaded.project.godot,
+            "4.3-stable".parse::<GodotRelease>().unwrap()
+        );
         assert_eq!(loaded.dependency.len(), 1);
         assert_eq!(loaded.dependency[0].name, "gut");
         assert_eq!(loaded.dependency[0].rev.as_deref(), Some("v9.3.0"));
@@ -733,7 +820,9 @@ mod tests {
         let path = dir.path().join("ggg.toml");
 
         let invalid = Config {
-            project: Project { godot: "4.3-stable".parse().unwrap() },
+            project: Project {
+                godot: "4.3-stable".parse().unwrap(),
+            },
             sync: None,
             dependency: vec![
                 Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"),
@@ -752,14 +841,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ggg.toml");
 
-        std::fs::write(&path, "# top-level comment\n[project]\ngodot = \"4.3-stable\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "# top-level comment\n[project]\ngodot = \"4.3-stable\"\n",
+        )
+        .unwrap();
 
         let mut config = Config::load(&path).unwrap();
-        config.dependency.push(Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"));
+        config.dependency.push(Dependency::new_git(
+            "gut",
+            "https://github.com/bitwes/Gut.git",
+            "v9.3.0",
+        ));
         config.save(&path).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("# top-level comment"), "comment was stripped");
+        assert!(
+            content.contains("# top-level comment"),
+            "comment was stripped"
+        );
     }
 
     #[test]
@@ -770,7 +870,11 @@ mod tests {
         std::fs::write(&path, "[project]\ngodot = \"4.3-stable\"\n").unwrap();
 
         let mut config = Config::load(&path).unwrap();
-        config.dependency.push(Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"));
+        config.dependency.push(Dependency::new_git(
+            "gut",
+            "https://github.com/bitwes/Gut.git",
+            "v9.3.0",
+        ));
         config.save(&path).unwrap();
 
         let reloaded = Config::load(&path).unwrap();
@@ -783,7 +887,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ggg.toml");
 
-        std::fs::write(&path, r#"[project]
+        std::fs::write(
+            &path,
+            r#"[project]
 godot = "4.3-stable"
 
 [[dependency]]
@@ -795,7 +901,9 @@ rev  = "v9.3.0"
 name = "phantom-camera"
 git  = "https://github.com/ramokz/phantom-camera.git"
 rev  = "main"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let mut config = Config::load(&path).unwrap();
         config.dependency.retain(|d| d.name != "gut");

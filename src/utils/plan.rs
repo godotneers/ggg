@@ -1,6 +1,6 @@
 //! Shared sync planning logic used by both `ggg sync` and `ggg diff`.
 //!
-//! [`build_plan`] resolves and downloads every dependency declared in
+//! [`resolve_and_plan`] resolves and downloads every dependency declared in
 //! `ggg.toml` and computes [`InstallPlan`]s and a [`CleanupPlan`] without
 //! writing anything to the project directory.
 
@@ -33,12 +33,29 @@ pub struct SyncPlan {
     pub cleanup: CleanupPlan,
 }
 
+/// Resolve and cache a single dependency, returning its resolved form and a
+/// short human-readable note (e.g. `"locked a1b2c3d4e5f6"` or
+/// `"resolved a1b2c3d4e5f6"`).
+///
+/// Downloads and installs into the cache on a miss.  Does **not** write the
+/// lock file; the caller is responsible for that.
+pub fn resolve_dependency(
+    dep: &crate::config::Dependency,
+    lock: &LockFile,
+    dep_cache: &DependencyCache,
+) -> Result<(ResolvedDependency, String)> {
+    match dep.kind() {
+        DepKind::Git { git, rev } => resolve_git_dependency(dep, git, rev, lock, dep_cache),
+        DepKind::Archive { url, .. } => resolve_archive_dependency(dep, url, lock, dep_cache),
+    }
+}
+
 /// Resolve, download (if needed), and plan the install for every dependency
 /// in `config`.  Nothing is written to `project_root`.
 ///
 /// Pass `force = true` to suppress conflict detection (mirrors `--force` in
 /// `ggg sync`).
-pub fn build_plan(
+pub fn resolve_and_plan(
     config: &Config,
     lock: &LockFile,
     old_state: &LocalState,
@@ -50,14 +67,7 @@ pub fn build_plan(
     let mut works: Vec<DepWork> = Vec::new();
 
     for dep in &config.dependency {
-        let (resolved, resolve_note) = match dep.kind() {
-            DepKind::Git { git, rev } => {
-                plan_git_dep(dep, git, rev, lock, dep_cache)?
-            }
-            DepKind::Archive { url, .. } => {
-                plan_archive_dep(dep, url, lock, dep_cache)?
-            }
-        };
+        let (resolved, resolve_note) = resolve_dependency(dep, lock, dep_cache)?;
 
         let cache_dir = dep_cache.entry_path(&resolved);
 
@@ -84,7 +94,7 @@ pub fn build_plan(
 // Per-dep-type helpers
 // ---------------------------------------------------------------------------
 
-fn plan_git_dep(
+fn resolve_git_dependency(
     dep: &crate::config::Dependency,
     git: &str,
     rev: &str,
@@ -140,7 +150,7 @@ fn plan_git_dep(
     Ok((resolved, resolve_note))
 }
 
-fn plan_archive_dep(
+fn resolve_archive_dependency(
     dep: &crate::config::Dependency,
     url: &str,
     lock: &LockFile,

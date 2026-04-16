@@ -75,6 +75,21 @@ enum Command {
         /// Show the diff for a specific file only
         file: Option<String>,
     },
+
+    /// List the raw contents of a dependency's cache entry
+    ///
+    /// Shows the source tree before strip_components or map are applied, so
+    /// you can determine the right values before running ggg sync.
+    ///
+    /// If the dependency is not yet cached it is fetched and the lock file is
+    /// updated as a side effect.
+    LsDep {
+        /// Name of the dependency (must be present in ggg.toml)
+        name: String,
+        /// Show every file path individually instead of a collapsed tree
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -133,5 +148,6 @@ fn main() -> Result<()> {
         },
         Command::Remove { name }           => commands::remove::run(&name),
         Command::Diff { file }             => commands::diff::run(file.as_deref()),
+        Command::LsDep { name, all }       => commands::ls_dep::run(&name, all),
     }
 }
