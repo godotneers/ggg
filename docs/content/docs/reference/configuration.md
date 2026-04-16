@@ -1,6 +1,6 @@
 +++
 title = "Configuration (ggg.toml)"
-weight = 1
+weight = 2
 +++
 
 Every project managed by Godot Goodie Grabber has a `ggg.toml` file at its root, alongside `project.godot`. This file is the single source of truth for the project's Godot version and addon dependencies.
@@ -55,7 +55,7 @@ force_overwrite = ["**/*.import", "**/*.uid"]
 force_overwrite = ["**/*.import", "**/*.uid"]
 ```
 
-This is primarily useful for files that the Godot editor rewrites automatically -- such as `.import` metadata and `.uid` files -- which would otherwise trigger a spurious conflict on every sync. See the [`ggg sync` reference](@/docs/reference/commands/sync.md) for a full explanation of conflict detection and the `--force` flag.
+This is primarily useful for files that the Godot editor rewrites automatically (such as `.import` metadata and `.uid` files), which would otherwise trigger a spurious conflict on every sync. See the [`ggg sync` reference](@/docs/reference/commands/sync.md) for a full explanation of conflict detection and the `--force` flag.
 
 ---
 
@@ -198,7 +198,7 @@ map = [
 
 When `map` is omitted entirely, the entire source tree is copied into the project root as-is. In most cases this is what you want as most Godot addons ship only the relevant files. Some addons ship additional examples or README files which you may not want. In these cases adding mappings will allow you to strip those out.
 
-When `map` is present, **only the listed paths are copied** -- everything else in the source tree is ignored. Given the example above:
+When `map` is present, **only the listed paths are copied**; everything else in the source tree is ignored. Given the example above:
 
 ```toml
 map = [

@@ -19,4 +19,8 @@ If the dependency is already in the local cache (e.g. from a previous `ggg sync`
 |------|-------------|
 | `--all` | Show every file path individually. By default, directories are collapsed to a single line with a file count. |
 
-> **Note:** This command is not yet implemented.
+## See also
+
+- [`ggg sync`](@/docs/reference/commands/sync.md): install dependencies
+- [`ggg add`](@/docs/reference/commands/add.md): add a dependency
+- [Configuration reference](@/docs/reference/configuration.md): `strip_components`, `map`

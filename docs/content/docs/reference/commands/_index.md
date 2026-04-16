@@ -1,6 +1,6 @@
 +++
 title = "Commands"
-weight = 2
+weight = 1
 sort_by = "weight"
 template = "section.html"
 +++

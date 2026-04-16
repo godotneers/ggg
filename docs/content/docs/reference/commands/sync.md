@@ -23,9 +23,9 @@ Downloads the Godot version declared in `ggg.toml` (if not already cached), reso
 **Godot:** downloads and caches the Godot binary declared in `[project]` if it is not already present. Does nothing if the version is already cached.
 
 **Dependencies:** for each dependency in `ggg.toml`:
-- Resolves the revision to a pinned commit SHA (git deps) or verifies the archive hash (archive deps), using the lock file to skip this step when nothing has changed.
+- Resolves the revision to a pinned commit SHA (git deps), verifies the archive hash (archive deps), or fetches the current download URL from the Godot Asset Library (asset deps). The lock file is used to skip this step when nothing has changed.
 - Downloads and caches the dependency if it is not already cached.
-- Installs the files into the project, applying `strip_components` and `map` as configured.
+- Installs the files into the project, applying `strip_components` and `map` as configured. Asset library dependencies default to `strip_components = 1`.
 
 **Cleanup:** removes files that were installed by a dependency that has since been removed from `ggg.toml`, or that no longer appear in a dependency's `map`.
 
