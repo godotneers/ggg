@@ -14,6 +14,6 @@ style = "primary"
 
 [[extra.hero.cta_buttons]]
 text = "View on GitHub"
-url = "https://github.com/derkork/ggg"
+url = "https://github.com/godotneers/ggg"
 style = "secondary"
 +++
