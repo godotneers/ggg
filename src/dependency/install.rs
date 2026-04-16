@@ -250,7 +250,11 @@ fn collect_file_pairs(
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
     let n_strip = match dep.dep.kind() {
         DepKind::Archive { strip_components, .. } => strip_components,
-        DepKind::Git { .. } => 0,
+        DepKind::Git { .. } => dep.dep.strip_components.unwrap_or(0),
+        // Asset library archives always wrap content in a root folder; strip
+        // it by default.  The user can override with strip_components = 0 in
+        // ggg.toml if needed.
+        DepKind::AssetLib { .. } => dep.dep.strip_components.unwrap_or(1),
     };
 
     // Collect all files from the cache with their cache-relative paths.
@@ -578,14 +582,14 @@ mod tests {
     fn make_dep(name: &str, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
         let mut dep = Dependency::new_git(name, "https://example.com/repo.git", "main");
         dep.map = map;
-        ResolvedDependency { dep, sha: "a".repeat(40) }
+        ResolvedDependency { dep, sha: "a".repeat(40), resolved_url: None, asset_version: None }
     }
 
     fn make_archive_dep(name: &str, strip: u32, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
         let mut dep = Dependency::new_archive(name, "https://example.com/archive.zip");
         dep.strip_components = if strip == 0 { None } else { Some(strip) };
         dep.map = map;
-        ResolvedDependency { dep, sha: "abc123".into() }
+        ResolvedDependency { dep, sha: "abc123".into(), resolved_url: None, asset_version: None }
     }
 
     /// Write `content` to `<dir>/<rel>`, creating parents as needed.

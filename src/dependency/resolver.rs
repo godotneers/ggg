@@ -44,7 +44,7 @@ pub fn resolve(dep: &Dependency) -> Result<ResolvedDependency> {
         resolve_remote(git, rev)
             .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?
     };
-    Ok(ResolvedDependency { dep: dep.clone(), sha })
+    Ok(ResolvedDependency { dep: dep.clone(), sha, resolved_url: None, asset_version: None })
 }
 
 // ---------------------------------------------------------------------------

@@ -46,8 +46,14 @@ pub fn run(name: &str, show_all: bool) -> Result<()> {
 
     // Header: "name  (rev -> sha[:8]...)" for git, "name  (sha[:8]...)" for archive.
     let version_note = match dep.kind() {
-        DepKind::Git { rev, .. } => format!("{} -> {}...", rev, &resolved.sha[..8]),
-        DepKind::Archive { .. }  => format!("{}...", &resolved.sha[..8]),
+        DepKind::Git { rev, .. }    => format!("{} -> {}...", rev, &resolved.sha[..8]),
+        DepKind::Archive { .. }     => format!("{}...", &resolved.sha[..8]),
+        DepKind::AssetLib { asset_id } => {
+            let version = resolved.asset_version
+                .map(|v| format!("v{} ", v))
+                .unwrap_or_default();
+            format!("asset #{asset_id} {version}-> {}...", &resolved.sha[..8])
+        }
     };
     println!("{name}  ({version_note})");
 

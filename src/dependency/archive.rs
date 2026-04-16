@@ -38,16 +38,6 @@ enum ArchiveFormat {
     TarGz,
 }
 
-fn detect_format(url: &str) -> Result<ArchiveFormat> {
-    if url.ends_with(".zip") {
-        Ok(ArchiveFormat::Zip)
-    } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-        Ok(ArchiveFormat::TarGz)
-    } else {
-        bail!("unrecognised archive format in URL {url:?}; supported: .zip, .tar.gz, .tgz")
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -65,19 +55,42 @@ pub fn download_and_extract(dep: &Dependency, dest_dir: &Path) -> Result<String>
     let DepKind::Archive { url, sha256: config_sha256, .. } = dep.kind() else {
         bail!("download_and_extract called on non-archive dependency {:?}", dep.name);
     };
+    download_and_extract_url(&dep.name, url, config_sha256, dest_dir)
+}
 
-    let format = detect_format(url)?;
+/// Download an archive from an explicit `url`, verify its SHA-256 (if
+/// `sha256_hint` is given), scan for path traversal, and extract into
+/// `dest_dir`.
+///
+/// Used for Godot Asset Library dependencies where the URL comes from the
+/// asset library API or lock file rather than from a `url` field in
+/// `ggg.toml`.
+///
+/// Returns the SHA-256 hex digest of the downloaded archive.
+pub fn download_and_extract_url(
+    dep_name: &str,
+    url: &str,
+    sha256_hint: Option<&str>,
+    dest_dir: &Path,
+) -> Result<String> {
+    // For asset library downloads the URL may not carry a standard extension
+    // (e.g. a redirect URL).  Default to Zip as every asset library package
+    // is a zip archive; tar.gz is still detected when the URL ends with it.
+    let format = if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
+        ArchiveFormat::TarGz
+    } else {
+        ArchiveFormat::Zip
+    };
 
     // Step 1: download to a temp file while computing SHA-256.
-    let (archive_sha, archive_path) = download_to_temp(url, &dep.name)
-        .with_context(|| format!("failed to download {:?} from {url:?}", dep.name))?;
+    let (archive_sha, archive_path) = download_to_temp(url, dep_name)
+        .with_context(|| format!("failed to download {dep_name:?} from {url:?}"))?;
 
-    // Step 2: verify the optional expected hash from ggg.toml.
-    if let Some(expected) = config_sha256 {
+    // Step 2: verify the optional expected hash.
+    if let Some(expected) = sha256_hint {
         if archive_sha != expected {
             bail!(
-                "SHA-256 mismatch for {:?}:\n  expected: {expected}\n  got:      {archive_sha}",
-                dep.name
+                "SHA-256 mismatch for {dep_name:?}:\n  expected: {expected}\n  got:      {archive_sha}",
             );
         }
     }
@@ -87,17 +100,17 @@ pub fn download_and_extract(dep: &Dependency, dest_dir: &Path) -> Result<String>
         ArchiveFormat::Zip   => archive_util::scan_zip(&archive_path),
         ArchiveFormat::TarGz => archive_util::scan_tar_gz(&archive_path),
     };
-    scan.with_context(|| format!("archive {:?} contains unsafe paths - refusing to extract", dep.name))?;
+    scan.with_context(|| format!("archive {dep_name:?} contains unsafe paths - refusing to extract"))?;
 
     // Step 4: extract into dest_dir as-is (no strip_components here).
     let extract = match format {
         ArchiveFormat::Zip   => archive_util::extract_zip(&archive_path, dest_dir),
         ArchiveFormat::TarGz => archive_util::extract_tar_gz(&archive_path, dest_dir),
     };
-    extract.with_context(|| format!("failed to extract {:?}", dep.name))?;
+    extract.with_context(|| format!("failed to extract {dep_name:?}"))?;
 
     // Step 5: write metadata.
-    write_metadata(dep, &archive_sha, dest_dir)
+    write_metadata_for_url(dep_name, url, &archive_sha, dest_dir)
         .context("failed to write archive dependency metadata")?;
 
     // Clean up the temp archive file.
@@ -187,11 +200,8 @@ struct ArchiveDepInfo<'a> {
     archive_sha: &'a str,
 }
 
-fn write_metadata(dep: &Dependency, archive_sha: &str, dest_dir: &Path) -> Result<()> {
-    let DepKind::Archive { url, .. } = dep.kind() else {
-        bail!("write_metadata called on non-archive dep");
-    };
-    let info = ArchiveDepInfo { name: &dep.name, url, archive_sha };
+fn write_metadata_for_url(name: &str, url: &str, archive_sha: &str, dest_dir: &Path) -> Result<()> {
+    let info = ArchiveDepInfo { name, url, archive_sha };
     let content = toml_edit::ser::to_string_pretty(&info)
         .context("failed to serialize archive metadata")?;
     let path = dest_dir.join(METADATA_FILE);
@@ -220,21 +230,8 @@ mod tests {
         Some(components[n as usize..].iter().collect())
     }
 
-    #[test]
-    fn detect_format_zip() {
-        assert!(matches!(detect_format("https://example.com/foo.zip").unwrap(), ArchiveFormat::Zip));
-    }
-
-    #[test]
-    fn detect_format_tar_gz() {
-        assert!(matches!(detect_format("https://example.com/foo.tar.gz").unwrap(), ArchiveFormat::TarGz));
-        assert!(matches!(detect_format("https://example.com/foo.tgz").unwrap(), ArchiveFormat::TarGz));
-    }
-
-    #[test]
-    fn detect_format_unknown_errors() {
-        assert!(detect_format("https://example.com/foo.rar").is_err());
-    }
+    // Format detection is now inline in download_and_extract_url:
+    // .tar.gz / .tgz -> TarGz, everything else -> Zip (asset library default).
 
     #[test]
     fn strip_components_zero() {

@@ -32,6 +32,8 @@ pub struct LockFile {
 ///
 /// Git entries have `git`, `rev`, and `sha` set.
 /// Archive entries have `url` and `archive_sha` set.
+/// Asset library entries have `asset_id`, `asset_version`, `url`, and
+/// `archive_sha` set.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LockEntry {
     /// Matches the `name` field in `ggg.toml`.
@@ -50,13 +52,24 @@ pub struct LockEntry {
     pub sha: Option<String>,
 
     // --- archive dep fields ---
-    /// The archive URL from `ggg.toml`. Together with `name` forms the lock
-    /// key: any URL change forces a fresh download.
+    /// The archive URL from `ggg.toml` (archive deps) or resolved from the
+    /// asset library API (asset lib deps).  Together with `name` forms the
+    /// lock key for archive deps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// SHA-256 hex digest of the downloaded archive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_sha: Option<String>,
+
+    // --- asset library dep fields ---
+    /// Numeric asset ID from the Godot Asset Library. Together with `name`
+    /// forms the lock key for asset lib deps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<u32>,
+    /// Asset library version integer at the time the lock was written.
+    /// Used by `ggg update` to detect whether a newer version is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_version: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,20 +104,34 @@ impl LockFile {
     pub fn upsert(&mut self, dep: &ResolvedDependency) {
         let entry = match dep.dep.kind() {
             DepKind::Git { git, rev } => LockEntry {
-                name:        dep.dep.name.clone(),
-                git:         Some(git.to_owned()),
-                rev:         Some(rev.to_owned()),
-                sha:         Some(dep.sha.clone()),
-                url:         None,
-                archive_sha: None,
+                name:          dep.dep.name.clone(),
+                git:           Some(git.to_owned()),
+                rev:           Some(rev.to_owned()),
+                sha:           Some(dep.sha.clone()),
+                url:           None,
+                archive_sha:   None,
+                asset_id:      None,
+                asset_version: None,
             },
             DepKind::Archive { url, .. } => LockEntry {
-                name:        dep.dep.name.clone(),
-                git:         None,
-                rev:         None,
-                sha:         None,
-                url:         Some(url.to_owned()),
-                archive_sha: Some(dep.sha.clone()),
+                name:          dep.dep.name.clone(),
+                git:           None,
+                rev:           None,
+                sha:           None,
+                url:           Some(url.to_owned()),
+                archive_sha:   Some(dep.sha.clone()),
+                asset_id:      None,
+                asset_version: None,
+            },
+            DepKind::AssetLib { asset_id } => LockEntry {
+                name:          dep.dep.name.clone(),
+                git:           None,
+                rev:           None,
+                sha:           None,
+                url:           dep.resolved_url.clone(),
+                archive_sha:   Some(dep.sha.clone()),
+                asset_id:      Some(asset_id),
+                asset_version: dep.asset_version,
             },
         };
         match self.entries.iter_mut().find(|e| e.name == dep.dep.name) {
@@ -140,6 +167,16 @@ impl LockFile {
             .and_then(|e| e.archive_sha.as_deref())
     }
 
+    /// Look up the lock entry for a Godot Asset Library dependency.
+    ///
+    /// Returns the entry only when `name` and `asset_id` both match.
+    /// A change to either field invalidates the entry.
+    pub fn locked_asset_lib(&self, name: &str, asset_id: u32) -> Option<&LockEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.name == name && e.asset_id == Some(asset_id))
+    }
+
     /// Remove the entry for the dependency with the given `name`, if present.
     pub fn remove(&mut self, name: &str) {
         self.entries.retain(|e| e.name != name);
@@ -165,6 +202,8 @@ mod tests {
         ResolvedDependency {
             dep: Dependency::new_git(name, "https://example.com/repo.git", rev),
             sha: sha.to_string(),
+            resolved_url: None,
+            asset_version: None,
         }
     }
 
@@ -172,6 +211,8 @@ mod tests {
         ResolvedDependency {
             dep: Dependency::new_archive(name, url),
             sha: archive_sha.to_string(),
+            resolved_url: None,
+            asset_version: None,
         }
     }
 

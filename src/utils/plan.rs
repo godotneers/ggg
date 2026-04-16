@@ -47,6 +47,7 @@ pub fn resolve_dependency(
     match dep.kind() {
         DepKind::Git { git, rev } => resolve_git_dependency(dep, git, rev, lock, dep_cache),
         DepKind::Archive { url, .. } => resolve_archive_dependency(dep, url, lock, dep_cache),
+        DepKind::AssetLib { asset_id } => resolve_asset_lib_dependency(dep, asset_id, lock, dep_cache),
     }
 }
 
@@ -105,7 +106,7 @@ fn resolve_git_dependency(
     let (mut resolved, mut resolve_note) =
         if let Some(sha) = lock.locked_sha(&dep.name, git, rev) {
             let note = format!("locked {}", &sha[..12]);
-            (ResolvedDependency { dep: dep.clone(), sha: sha.to_owned() }, note)
+            (ResolvedDependency { dep: dep.clone(), sha: sha.to_owned(), resolved_url: None, asset_version: None }, note)
         } else {
             let r = resolve(dep)
                 .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?;
@@ -150,6 +151,74 @@ fn resolve_git_dependency(
     Ok((resolved, resolve_note))
 }
 
+fn resolve_asset_lib_dependency(
+    dep: &crate::config::Dependency,
+    asset_id: u32,
+    lock: &LockFile,
+    dep_cache: &DependencyCache,
+) -> Result<(ResolvedDependency, String)> {
+    if let Some(entry) = lock.locked_asset_lib(&dep.name, asset_id) {
+        let url = entry.url.as_deref()
+            .with_context(|| format!("lock entry for {:?} is missing a url field", dep.name))?;
+        let archive_sha = entry.archive_sha.as_deref()
+            .with_context(|| format!("lock entry for {:?} is missing an archive_sha field", dep.name))?;
+
+        let version_label = entry.asset_version
+            .map(|v| format!(" (version {})", v))
+            .unwrap_or_default();
+        let note = format!("locked{}", version_label);
+
+        let resolved = ResolvedDependency {
+            dep: dep.clone(),
+            sha: archive_sha.to_owned(),
+            resolved_url: Some(url.to_owned()),
+            asset_version: entry.asset_version,
+        };
+
+        if !dep_cache.contains(&resolved) {
+            // Cache was cleared - re-download from the locked URL and verify.
+            println!("  {} - re-downloading (cache miss)...", dep.name);
+            let downloaded_sha = dep_cache
+                .install_asset_lib(&dep.name, url, Some(archive_sha))
+                .with_context(|| format!("failed to re-download {:?}", dep.name))?;
+            if downloaded_sha != archive_sha {
+                anyhow::bail!(
+                    "archive for {:?} has changed since the lock file was written\n\
+                     locked:     {archive_sha}\n\
+                     downloaded: {downloaded_sha}\n\
+                     If this is intentional, remove the lock entry and re-run ggg sync.",
+                    dep.name,
+                );
+            }
+        }
+
+        return Ok((resolved, note));
+    }
+
+    // No lock entry - fetch current version from the asset library API.
+    println!("  {} - fetching from Godot Asset Library...", dep.name);
+    let detail = crate::godot::asset_lib::get_asset(asset_id)
+        .with_context(|| format!(
+            "failed to fetch asset {:?} (id={}) from the Godot Asset Library",
+            dep.name, asset_id,
+        ))?;
+
+    let archive_sha = dep_cache
+        .install_asset_lib(&dep.name, &detail.download_url, detail.download_hash.as_deref())
+        .with_context(|| format!("failed to download {:?}", dep.name))?;
+
+    let note = format!("downloaded v{}", detail.version_string);
+
+    let resolved = ResolvedDependency {
+        dep: dep.clone(),
+        sha: archive_sha,
+        resolved_url: Some(detail.download_url),
+        asset_version: Some(detail.version),
+    };
+
+    Ok((resolved, note))
+}
+
 fn resolve_archive_dependency(
     dep: &crate::config::Dependency,
     url: &str,
@@ -157,7 +226,7 @@ fn resolve_archive_dependency(
     dep_cache: &DependencyCache,
 ) -> Result<(ResolvedDependency, String)> {
     if let Some(locked_sha) = lock.locked_archive_sha(&dep.name, url) {
-        let resolved = ResolvedDependency { dep: dep.clone(), sha: locked_sha.to_owned() };
+        let resolved = ResolvedDependency { dep: dep.clone(), sha: locked_sha.to_owned(), resolved_url: None, asset_version: None };
         let note = format!("locked {}", &locked_sha[..8]);
 
         if !dep_cache.contains(&resolved) {
@@ -184,7 +253,7 @@ fn resolve_archive_dependency(
         let archive_sha = dep_cache
             .install_archive(dep)
             .with_context(|| format!("failed to download {:?}", dep.name))?;
-        let resolved = ResolvedDependency { dep: dep.clone(), sha: archive_sha.clone() };
+        let resolved = ResolvedDependency { dep: dep.clone(), sha: archive_sha.clone(), resolved_url: None, asset_version: None };
         let note = format!("downloaded {}", &archive_sha[..8]);
         Ok((resolved, note))
     }

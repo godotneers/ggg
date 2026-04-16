@@ -1,16 +1,17 @@
 //! Implementation of `ggg add`.
 //!
-//! Two subcommands:
+//! Three subcommands:
 //!
 //! - `ggg add git <url>[@rev]` - adds a git dependency, resolves the rev
 //!   against the remote before writing.
 //! - `ggg add archive <url>` - adds an archive dependency; no network call at
 //!   add time (the sha256 field, if provided, is verified on first sync).
+//! - `ggg add asset <query|id>` - searches the Godot Asset Library and adds
+//!   the matching dep by asset ID.
 //!
-//! The bare `ggg add <url>` form is kept as a convenience: if the URL ends
-//! with a known archive extension (`.zip`, `.tar.gz`, `.tgz`) it routes to
-//! the archive path; otherwise it routes to git.  If the type cannot be
-//! inferred the user is prompted.
+//! The bare `ggg add <input>` form is kept as a convenience: archive URLs
+//! route to the archive path, git URLs route to git, and anything else is
+//! treated as an asset library query or ID.
 
 use std::path::Path;
 
@@ -20,6 +21,7 @@ use indicatif::ProgressBar;
 
 use crate::config::{Config, Dependency};
 use crate::dependency::resolver;
+use crate::godot::asset_lib;
 
 pub fn run_git(git_url: Option<&str>, yes: bool) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
@@ -135,28 +137,130 @@ pub fn run_archive(archive_url: Option<&str>, name_arg: Option<&str>, strip_comp
     Ok(())
 }
 
-/// Handle `ggg add <url>` with no explicit subcommand - detect type from URL
-/// extension and prompt if ambiguous.
-pub fn run_bare(url: &str, yes: bool) -> Result<()> {
-    if url.ends_with(".zip") || url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-        run_archive(Some(url), None, None, None)
-    } else if url.contains("://") || url.ends_with(".git") || url.contains(':') {
-        run_git(Some(url), yes)
-    } else if yes {
-        bail!("cannot determine whether {url:?} is a git URL or an archive; use `ggg add git` or `ggg add archive` explicitly");
+/// Handle `ggg add <input>` with no explicit subcommand.
+///
+/// - Archive extensions (`.zip`, `.tar.gz`, `.tgz`) -> archive dep.
+/// - URL-like strings (`://`, `.git`, SCP-style) -> git dep.
+/// - Anything else (plain name or numeric ID) -> asset library search.
+pub fn run_bare(input: &str, yes: bool) -> Result<()> {
+    if input.ends_with(".zip") || input.ends_with(".tar.gz") || input.ends_with(".tgz") {
+        run_archive(Some(input), None, None, None)
+    } else if input.contains("://") || input.ends_with(".git") || input.contains(':') {
+        run_git(Some(input), yes)
     } else {
-        // Ask the user.
-        let theme = ColorfulTheme::default();
-        let choice = Select::with_theme(&theme)
-            .with_prompt("Is this a git repository or an archive?")
-            .items(&["git repository", "archive (.zip / .tar.gz)"])
-            .default(0)
-            .interact()?;
-        match choice {
-            0 => run_git(Some(url), false),
-            _ => run_archive(Some(url), None, None, None),
-        }
+        run_asset(Some(input), None, yes)
     }
+}
+
+/// Handle `ggg add asset [<query-or-id>] [--id <N>]`.
+///
+/// If `id_override` is given the asset is fetched directly.  Otherwise
+/// `query` is used as a search term; a pure number is treated as an ID.
+///
+/// - 0 results: error.
+/// - 1 result: confirmation prompt (skipped with `--yes`).
+/// - 2-5 results: interactive picker with a Cancel option.
+/// - 6+ results: error suggesting `ggg search`.
+pub fn run_asset(query: Option<&str>, id_override: Option<u32>, yes: bool) -> Result<()> {
+    let ggg_toml = Path::new("ggg.toml");
+    let mut config = Config::load(ggg_toml)?;
+    let theme = ColorfulTheme::default();
+
+    let godot_version = {
+        let v = &config.project.godot.version;
+        format!("{}.{}", v.major, v.minor)
+    };
+
+    // Resolve to a single AssetDetail.
+    let detail = if let Some(id) = id_override {
+        asset_lib::get_asset(id)
+            .with_context(|| format!("failed to fetch asset id {id} from the Godot Asset Library"))?
+    } else {
+        let q = match query {
+            Some(q) => q.to_owned(),
+            None => Input::with_theme(&theme)
+                .with_prompt("Asset name or ID")
+                .interact_text()?,
+        };
+
+        // A pure number is treated as a direct asset ID.
+        if let Ok(id) = q.trim().parse::<u32>() {
+            asset_lib::get_asset(id)
+                .with_context(|| format!("failed to fetch asset id {id} from the Godot Asset Library"))?
+        } else {
+            let (results, total) = asset_lib::search(&q, &godot_version)
+                .context("failed to search the Godot Asset Library")?;
+
+            match results.len() {
+                0 => bail!(
+                    "no assets found for {:?} on Godot {godot_version}",
+                    q
+                ),
+                _ if total > 5 => bail!(
+                    "found {total} results for {:?}; use `ggg search {q}` to browse, \
+                     then `ggg add asset --id <N>` to add a specific one",
+                    q
+                ),
+                1 => {
+                    asset_lib::get_asset(results[0].asset_id)
+                        .with_context(|| "failed to fetch asset details from the Godot Asset Library".to_string())?
+                }
+                _ => {
+                    // 2-5 results: interactive picker.
+                    let mut items: Vec<String> = results
+                        .iter()
+                        .map(|r| format!("#{} {} - by {} [{}]", r.asset_id, r.title, r.author, r.license))
+                        .collect();
+                    items.push("Cancel".to_owned());
+
+                    let choice = Select::with_theme(&theme)
+                        .with_prompt("Select asset")
+                        .items(&items)
+                        .default(0)
+                        .interact()?;
+
+                    if choice == results.len() {
+                        bail!("cancelled");
+                    }
+
+                    asset_lib::get_asset(results[choice].asset_id)
+                        .with_context(|| "failed to fetch asset details from the Godot Asset Library".to_string())?
+                }
+            }
+        }
+    };
+
+    // Confirm and add.
+    let default_name = infer_name_from_asset(&detail.title);
+
+    let name = if yes {
+        default_name
+    } else {
+        println!("Found: {} (v{})", detail.title, detail.version_string);
+        println!("  Author:  {}", detail.author);
+        println!("  License: {}", detail.license);
+        println!("  Browse:  {}", detail.browse_url);
+        println!();
+        Input::with_theme(&theme)
+            .with_prompt("Dependency name")
+            .default(default_name)
+            .interact_text()?
+    };
+
+    if name.is_empty() {
+        bail!("dependency name cannot be empty");
+    }
+
+    if config.has_dependency(&name) {
+        bail!("a dependency named {:?} already exists in ggg.toml", name);
+    }
+
+    let dep = Dependency::new_asset_lib(&name, detail.asset_id);
+    config.dependency.push(dep);
+    config.save(ggg_toml)?;
+
+    println!("Added {name:?} (asset #{}). Run `ggg sync` to install.", detail.asset_id);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +278,25 @@ fn parse_url_rev(s: &str) -> (String, Option<String>) {
         }
     }
     (s.to_owned(), None)
+}
+
+/// Derive a dependency name from a Godot Asset Library asset title.
+///
+/// Takes everything before the first  " - " separator (if any), lowercases it,
+/// replaces non-alphanumeric characters with hyphens, and collapses runs.
+///
+/// Examples: "GUT - Godot Unit Testing" -> "gut"
+///           "Phantom Camera" -> "phantom-camera"
+fn infer_name_from_asset(title: &str) -> String {
+    let base = title.split(" - ").next().unwrap_or(title);
+    base.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Derive a dependency name from a git URL.

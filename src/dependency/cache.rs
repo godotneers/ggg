@@ -133,10 +133,26 @@ impl DependencyCache {
     ///
     /// Returns the archive SHA-256 (the cache key / lock file entry).
     pub fn install_archive(&self, dep: &crate::config::Dependency) -> Result<String> {
-        let DepKind::Archive { url, .. } = dep.kind() else {
+        let DepKind::Archive { url, sha256, .. } = dep.kind() else {
             anyhow::bail!("cache::install_archive() called on non-archive dependency {:?}", dep.name);
         };
+        self.install_from_url(&dep.name, url, sha256)
+    }
 
+    /// Download and install an asset library dependency into the cache using
+    /// the URL resolved from the asset library API or lock file.
+    ///
+    /// Behaves identically to [`install_archive`] but accepts an explicit URL
+    /// and optional SHA-256 hint instead of reading them from a [`Dependency`].
+    ///
+    /// Returns the archive SHA-256 (the cache key / lock file entry).
+    pub fn install_asset_lib(&self, dep_name: &str, url: &str, sha256_hint: Option<&str>) -> Result<String> {
+        self.install_from_url(dep_name, url, sha256_hint)
+    }
+
+    /// Shared implementation: download `url` into a temporary directory, then
+    /// atomically rename it into `<base>/<url_hash(url)>/<archive_sha>/`.
+    fn install_from_url(&self, dep_name: &str, url: &str, sha256_hint: Option<&str>) -> Result<String> {
         let hash_dir = self.base.join(url_hash(url));
         std::fs::create_dir_all(&hash_dir)
             .with_context(|| format!("failed to create cache directory {}", hash_dir.display()))?;
@@ -146,8 +162,8 @@ impl DependencyCache {
             .tempdir_in(&hash_dir)
             .context("failed to create temporary install directory")?;
 
-        let archive_sha = super::archive::download_and_extract(dep, tmp_dir.path())
-            .with_context(|| format!("failed to download/extract {:?}", dep.name))?;
+        let archive_sha = super::archive::download_and_extract_url(dep_name, url, sha256_hint, tmp_dir.path())
+            .with_context(|| format!("failed to download/extract {dep_name:?}"))?;
 
         let dest = hash_dir.join(&archive_sha);
         if dest.is_dir() {
@@ -176,8 +192,15 @@ impl DependencyCache {
                 .join(url_hash(&normalize_url(git)))
                 .join(&dep.sha),
             DepKind::Archive { url, .. } => self.base
-                .join(url_hash(url)) // no normalization for archive URLs
+                .join(url_hash(url))
                 .join(&dep.sha),
+            DepKind::AssetLib { .. } => {
+                let url = dep.resolved_url.as_deref()
+                    .expect("AssetLib ResolvedDependency must have resolved_url set");
+                self.base
+                    .join(url_hash(url))
+                    .join(&dep.sha)
+            }
         }
     }
 }
@@ -382,6 +405,8 @@ mod tests {
         ResolvedDependency {
             dep: crate::config::Dependency::new_git("test", git, "main"),
             sha: sha.into(),
+            resolved_url: None,
+            asset_version: None,
         }
     }
 

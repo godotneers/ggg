@@ -93,7 +93,7 @@ pub struct Dependency {
 
     // --- archive source -------------------------------------------------------
     /// HTTPS URL of a pre-built archive (`.zip`, `.tar.gz`, `.tgz`).
-    /// Mutually exclusive with `git`.
+    /// Mutually exclusive with `git` and `asset_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 
@@ -106,6 +106,15 @@ pub struct Dependency {
     /// writing to the cache, equivalent to `tar --strip-components`. Default 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strip_components: Option<u32>,
+
+    // --- Godot Asset Library source -------------------------------------------
+    /// Numeric asset ID from the Godot Asset Library (godotengine.org).
+    /// Mutually exclusive with `git` and `url`.
+    ///
+    /// The download URL and SHA-256 are resolved at `ggg sync` time via the
+    /// asset library API and pinned in `ggg.lock`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<u32>,
 
     // --- common ---------------------------------------------------------------
     /// Path mappings that control which parts of the source are installed
@@ -130,6 +139,12 @@ pub enum DepKind<'a> {
         sha256: Option<&'a str>,
         strip_components: u32,
     },
+    /// Sourced from the Godot Asset Library by numeric asset ID.
+    ///
+    /// The download URL is resolved at `ggg sync` time and pinned in the lock
+    /// file.  The `map` and `strip_components` fields on the parent
+    /// [`Dependency`] apply as usual at install time.
+    AssetLib { asset_id: u32 },
 }
 
 impl Dependency {
@@ -139,21 +154,23 @@ impl Dependency {
     /// nor `url`, or has both). Always call [`Config::validate`] before using
     /// this method.
     pub fn kind(&self) -> DepKind<'_> {
-        match (&self.git, &self.url) {
-            (Some(git), None) => DepKind::Git {
+        match (&self.git, &self.url, &self.asset_id) {
+            (Some(git), None, None) => DepKind::Git {
                 git,
                 rev: self
                     .rev
                     .as_deref()
                     .expect("git dep missing rev (validate() not called)"),
             },
-            (None, Some(url)) => DepKind::Archive {
+            (None, Some(url), None) => DepKind::Archive {
                 url,
                 sha256: self.sha256.as_deref(),
                 strip_components: self.strip_components.unwrap_or(0),
             },
+            (None, None, Some(id)) => DepKind::AssetLib { asset_id: *id },
             _ => panic!(
-                "invalid dep {:?}: must have exactly one of git or url (call validate() first)",
+                "invalid dep {:?}: must have exactly one of git, url, or asset_id \
+                 (call validate() first)",
                 self.name
             ),
         }
@@ -172,6 +189,7 @@ impl Dependency {
             url: None,
             sha256: None,
             strip_components: None,
+            asset_id: None,
             map: None,
         }
     }
@@ -185,60 +203,103 @@ impl Dependency {
             url: Some(url.into()),
             sha256: None,
             strip_components: None,
+            asset_id: None,
+            map: None,
+        }
+    }
+
+    /// Convenience constructor for a Godot Asset Library dependency.
+    pub fn new_asset_lib(name: impl Into<String>, asset_id: u32) -> Self {
+        Self {
+            name: name.into(),
+            git: None,
+            rev: None,
+            url: None,
+            sha256: None,
+            strip_components: None,
+            asset_id: Some(asset_id),
             map: None,
         }
     }
 
     /// Validate the source fields of this single dependency entry.
     fn validate_source(&self) -> Result<()> {
-        match (&self.git, &self.url) {
-            (Some(_), Some(_)) => anyhow::bail!(
-                "dependency {:?}: cannot have both 'git' and 'url'",
+        let source_count = [self.git.is_some(), self.url.is_some(), self.asset_id.is_some()]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+
+        if source_count > 1 {
+            anyhow::bail!(
+                "dependency {:?}: 'git', 'url', and 'asset_id' are mutually exclusive; \
+                 set exactly one",
                 self.name
-            ),
-            (None, None) => anyhow::bail!(
-                "dependency {:?}: must have either 'git' or 'url'",
+            );
+        }
+
+        if source_count == 0 {
+            anyhow::bail!(
+                "dependency {:?}: must have exactly one of 'git', 'url', or 'asset_id'",
                 self.name
-            ),
-            (Some(_), None) => {
-                if self.rev.is_none() {
-                    anyhow::bail!(
-                        "dependency {:?}: 'git' dependencies require a 'rev' field",
-                        self.name
-                    );
-                }
-                if self.sha256.is_some() {
-                    anyhow::bail!(
-                        "dependency {:?}: 'sha256' is only valid for archive ('url') dependencies",
-                        self.name
-                    );
-                }
-                if self.strip_components.is_some() {
-                    anyhow::bail!(
-                        "dependency {:?}: 'strip_components' is only valid for archive ('url') dependencies",
-                        self.name
-                    );
-                }
+            );
+        }
+
+        if self.git.is_some() {
+            if self.rev.is_none() {
+                anyhow::bail!(
+                    "dependency {:?}: 'git' dependencies require a 'rev' field",
+                    self.name
+                );
             }
-            (None, Some(url)) => {
-                if self.rev.is_some() {
-                    anyhow::bail!(
-                        "dependency {:?}: 'rev' is only valid for 'git' dependencies",
-                        self.name
-                    );
-                }
-                let supported =
-                    url.ends_with(".zip") || url.ends_with(".tar.gz") || url.ends_with(".tgz");
-                if !supported {
-                    anyhow::bail!(
-                        "dependency {:?}: unrecognised archive format in URL {:?}; \
-                         supported extensions: .zip, .tar.gz, .tgz",
-                        self.name,
-                        url
-                    );
-                }
+            if self.sha256.is_some() {
+                anyhow::bail!(
+                    "dependency {:?}: 'sha256' is only valid for archive ('url') dependencies",
+                    self.name
+                );
+            }
+            if self.strip_components.is_some() {
+                anyhow::bail!(
+                    "dependency {:?}: 'strip_components' is only valid for archive ('url') dependencies",
+                    self.name
+                );
             }
         }
+
+        if let Some(url) = &self.url {
+            if self.rev.is_some() {
+                anyhow::bail!(
+                    "dependency {:?}: 'rev' is only valid for 'git' dependencies",
+                    self.name
+                );
+            }
+            let supported =
+                url.ends_with(".zip") || url.ends_with(".tar.gz") || url.ends_with(".tgz");
+            if !supported {
+                anyhow::bail!(
+                    "dependency {:?}: unrecognised archive format in URL {:?}; \
+                     supported extensions: .zip, .tar.gz, .tgz",
+                    self.name,
+                    url
+                );
+            }
+        }
+
+        if self.asset_id.is_some() {
+            if self.rev.is_some() {
+                anyhow::bail!(
+                    "dependency {:?}: 'rev' is only valid for 'git' dependencies",
+                    self.name
+                );
+            }
+            if self.sha256.is_some() {
+                anyhow::bail!(
+                    "dependency {:?}: 'sha256' is not valid for asset library dependencies \
+                     (the hash is recorded automatically in ggg.lock)",
+                    self.name
+                );
+            }
+        }
+
         Ok(())
     }
 }
