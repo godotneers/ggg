@@ -1,4 +1,4 @@
-base_url = "/"
+base_url = "/ggg"
 title = "Godot Goodie Grabber"
 description = "A project manager for Godot games. Pin your engine version, manage addon dependencies from git, and run your project - all with one tool."
 default_language = "en"
