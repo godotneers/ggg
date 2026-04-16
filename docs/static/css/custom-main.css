@@ -1,3 +1,96 @@
+/* Use the same flat dark background for code blocks in all themes */
+pre,
+[data-theme="goyo-light"] pre,
+[data-theme="goyo-dark"] pre {
+    background: #1e293b !important;
+}
+
+/* Match the text colour to the dark background in all themes */
+[data-theme="goyo-light"] pre code {
+    color: #e5e7eb !important;
+}
+
+/* Remove the gradient top stripe on code blocks */
+pre::before {
+    display: none;
+}
+
+/* Remove per-item bottom margin so list item spacing matches paragraph line spacing */
+main ul li,
+main ol li {
+    margin-bottom: 0;
+}
+
+/* Restore browser-default unordered list rendering (theme replaces bullets with triangles) */
+main ul {
+    list-style-type: disc;
+    padding-left: 1.5rem;
+}
+
+main ul li {
+    padding-left: 0;
+}
+
+main ul li::before {
+    display: none;
+}
+
+/* Restore browser-default ordered list rendering (theme replaces it with gradient circles) */
+main ol {
+    list-style-type: decimal;
+    padding-left: 1.5rem;
+    counter-reset: unset;
+}
+
+main ol li {
+    padding-left: 0;
+    counter-increment: unset;
+}
+
+main ol li::before {
+    display: none;
+}
+
+/* Reduce top margin on h2 (theme default is mt-16 / 4rem, this matches mt-12) */
+h2 {
+    margin-top: 3rem;
+}
+
+/* Remove the theme's gradient underline decoration on h2 */
+h2::after {
+    display: none;
+}
+
+/* Inline code inside headings should match the heading font size */
+h1 code, h2 code, h3 code, h4 code, h5 code, h6 code {
+    font-size: inherit;
+}
+
+/* Always underline links in prose content (paragraphs, list items, table cells).
+   Suppress the theme's border-bottom hover effect on these elements -- the theme
+   uses border-bottom: 1px solid transparent that transitions to currentColor on
+   hover, which produces a second underline on top of our text-decoration. */
+main p a,
+main li a,
+main td a {
+    text-decoration: underline;
+}
+
+main p a:hover,
+main li a:hover,
+main td a:hover {
+    border-bottom-color: transparent;
+}
+
+/* Linked inline code: inherit the anchor colour so the code box signals it is
+   clickable. The theme's border + background hide a regular underline, so
+   colour is the only reliable indicator. */
+main p a code,
+main li a code,
+main td a code {
+    color: inherit;
+}
+
 /* Hero logo - shown above the title on the landing page */
 h1.text-6xl::before {
     --logo-width: 20rem;

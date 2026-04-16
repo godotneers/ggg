@@ -3,102 +3,90 @@ title = "Quick Start"
 weight = 1
 +++
 
-Get up and running with {{ tool_name() }} in a few minutes.
-
-## Prerequisites
-
-- **Godot project**: You need an existing `project.godot` file, or create a new project via the Godot editor first.
-- **Internet access**: {{ tool_name() }} downloads the Godot binary and git dependencies on first use.
+In this guide we'll use Godot Goodie Grabber to manage the dependencies and Godot version of a Godot project. The whole thing takes about five minutes.
 
 ## Installation
 
-Download a pre-built binary from the [releases page](https://github.com/derkork/ggg/releases) and put it somewhere on your `PATH`, or install via Cargo:
+First, we need to get Godot Goodie Grabber onto our machine. Head over to the [installation guide](@/docs/installation.md) for instructions, then come back here.
 
-```bash
-cargo install ggg
-```
+## Initialize the project
 
-The binary is named `{{ cli() }}`.
-
-## Initialise a Project
-
-Navigate to your Godot project's root directory (where `project.godot` lives) and run:
+Let's open a terminal, navigate to the directory where we want to create your project, and run:
 
 ```bash
 ggg init
 ```
 
-This creates a `ggg.toml` pre-filled with the latest stable Godot version. Edit it to match your project:
+Godot Goodie Grabber fetches the list of available Godot releases and shows us an interactive picker so we can choose the version we want. If a `project.godot` file is already present, it pre-selects the version that matches. Once we confirm, Godot Goodie Grabber creates a `ggg.toml`:
 
 ```toml
 [project]
-godot = "4.3.0"
+godot = "4.6.2"
 ```
 
-## Add Dependencies
+If there was no `project.godot` yet, Godot Goodie Grabber also creates a minimal one for the selected Godot version so the project opens correctly in the editor.
 
-Add an addon by passing its git URL:
+Godot Goodie Grabber also adds `.ggg.state` to `.gitignore` automatically. The `.ggg.state` file tracks which files Godot Goodie Grabber has installed into the project. It should not be committed to the repository, which is why it goes into `.gitignore`.
+
+## Add a dependency
+
+We can add an addon with [`ggg add`](@/docs/reference/commands/add.md). Let's add GUT, the Godot unit testing framework:
 
 ```bash
 ggg add https://github.com/bitwes/Gut.git
 ```
 
-{{ tool_name() }} will prompt for a name, revision, and install path, then add an entry to `ggg.toml`:
+Godot Goodie Grabber detects this is a Git URL and asks us for a revision (a tag, branch, or commit SHA) and a short name. We pick `main` as the revision and accept the suggested name `gut`. Godot Goodie Grabber then verifies the revision exists on the remote and adds the entry to `ggg.toml`:
+
+```
+Added "gut" (main) resolved to fbfabd5052e9
+Run `ggg sync` to install it.
+```
+
+The new entry in `ggg.toml` looks like this:
 
 ```toml
 [[dependency]]
-name   = "gut"
-git    = "https://github.com/bitwes/Gut.git"
-rev    = "v9.3.0"
-target = "addons/gut"
+name = "gut"
+git  = "https://github.com/bitwes/Gut.git"
+rev  = "main"
 ```
-
-You can also edit `ggg.toml` directly - `{{ cli() }} sync` will pick up any changes.
 
 ## Sync
 
-Install Godot and all dependencies:
+Now let's install everything:
 
 ```bash
 ggg sync
 ```
 
-{{ tool_name() }} will:
+Godot Goodie Grabber downloads the Godot release declared in `[project]` into a shared cache on our machine. Then it fetches each dependency, copies the files into the project, and writes a `ggg.lock` file. For example, we can see the output of [`ggg sync`](@/docs/reference/commands/sync.md) for GUT:
 
-1. Download and cache the Godot binary declared in `[project]`
-2. Clone or fetch each dependency and check out the declared `rev`
-3. Copy (or link) the addon files into the `target` path inside your project
-4. Write a `ggg.lock` file recording the exact commit SHA for each dependency
-
-Commit both `ggg.toml` and `ggg.lock` to your repository.
-
-## Open the Editor
-
-```bash
-ggg edit
+```
+gut - downloading...
+Fetched gut
+gut (resolved fbfabd5052e9): installed 257 files (257 total)
 ```
 
-Launches the Godot editor at the exact version pinned in `ggg.toml`. No hunting for the right binary.
-
-## Run the Project
+The `ggg.lock` file records the exact commit SHA resolved so that everytime you, a teammate, or your CI system runs `ggg sync` the bit-for-bit identical files are fetched. Because `ggg` will fetch the correct addon versions for us, we actually don't need to commit them with our project, so we can add the `addons` folder to our project's `.gitignore` file. 
 
 ```bash
-ggg run
+echo "addons/" >> .gitignore
 ```
 
-Runs Godot against the project. Pass additional arguments after `--`:
+Finally, let's commit both `ggg.toml` and `ggg.lock` to our repository, so every:
 
 ```bash
-ggg run -- --headless --export-release linux build/game.x86_64
+git add ggg.toml ggg.lock
+git commit -m "Add ggg project configuration"
 ```
 
-## Onboarding a Teammate
+## Editing the project
 
-```bash
-git clone https://github.com/your-org/your-game.git
-cd your-game
-ggg sync
-ggg edit
-```
+Now we can open the project in godot by typing [`ggg edit`](@/docs/reference/commands/edit.md) in the terminal. This will launch the exact Godot version we gave in `ggg.toml`. Finally, we need to enable the _GUT_ addon in the editor's project settings, as this is specific to the addon and Godot Goodie Grabber cannot do it for us. 
 
-That's it. `{{ cli() }} sync` reproduces the full environment from `ggg.lock` - same Godot binary, same addon revisions, every time.
+
+## What's next
+- **Run the project** - [`ggg run`](@/docs/reference/commands/run.md) starts Godot in the project.
+- **More dependency types** - besides git repositories, Godot Goodie Grabber can also install pre-built archive dependencies. See the [`ggg add` reference](@/docs/reference/commands/add.md) for details
+- **Configuration reference** - the full list of fields available in `ggg.toml` is in the [configuration reference](@/docs/reference/configuration.md)

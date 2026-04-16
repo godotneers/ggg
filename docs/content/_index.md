@@ -1,11 +1,11 @@
 +++
 title = "Godot Goodie Grabber"
-description = "Godot Goodie Grabber - a project manager for Godot games."
+description = "Godot Goodie Grabber - the missing project and dependency manager for Godot."
 template = "landing.html"
 
 [extra.hero]
 title = "Godot Goodie Grabber"
-description = "Pin your Godot version, manage addon dependencies from git, and open or run your project - all with one tool."
+description = "The missing project and dependency manager for Godot."
 
 [[extra.hero.cta_buttons]]
 text = "Get Started"

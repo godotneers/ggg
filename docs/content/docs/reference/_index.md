@@ -5,4 +5,4 @@ sort_by = "weight"
 template = "section.html"
 +++
 
-Detailed reference documentation for {{ tool_name() }}'s configuration format and CLI commands.
+Detailed reference documentation for Godot Goodie Grabber's configuration format and CLI commands.
