@@ -100,7 +100,7 @@ h1.text-6xl::before {
     display: block;
     width: var(--logo-width);
     height: calc(var(--logo-width) / (var(--logo-aspect-ratio)));
-    background-image: url('ggg.svg');
+    background-image: url('../ggg.svg');
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
