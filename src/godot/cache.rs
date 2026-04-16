@@ -118,14 +118,22 @@ impl GodotCache {
 
 /// Find the Godot executable within an extracted release directory.
 ///
+/// On macOS, Godot ships as a `.app` bundle; the real executable lives at
+/// `<Name>.app/Contents/MacOS/Godot`. On Windows and Linux the executable is
+/// a regular file and is found by scanning the directory by name pattern.
+///
 /// On Windows, Godot ships two executables: a standard one and a console
 /// variant (name contains `_console`). We always prefer the non-console one.
-/// On Linux and macOS there is only one executable.
 ///
-/// Searches up to two levels deep because the Windows mono zip wraps
-/// everything in a single subdirectory (e.g. `Godot_v4.6-stable_mono_win64/`)
-/// while the standard Windows zip places the exe directly at the root.
+/// Searches up to two levels deep on Windows/Linux because the Windows mono
+/// zip wraps everything in a single subdirectory.
 fn find_executable(dir: &Path) -> Result<PathBuf> {
+    // macOS: look for a *.app bundle and return the binary inside it.
+    #[cfg(target_os = "macos")]
+    if let Some(exe) = find_macos_app_executable(dir) {
+        return Ok(exe);
+    }
+
     let candidates = collect_executables(dir, 2);
 
     match candidates.len() {
@@ -139,6 +147,28 @@ fn find_executable(dir: &Path) -> Result<PathBuf> {
                 .context("could not find a non-console Godot executable")
         }
     }
+}
+
+/// On macOS, find the Godot binary inside a `.app` bundle.
+///
+/// Looks for a `*.app` directory at the top level of `dir`, then checks for
+/// `Contents/MacOS/Godot` inside it. Handles both `Godot.app` (standard) and
+/// `Godot_mono.app` (Mono) bundles.
+#[cfg(target_os = "macos")]
+fn find_macos_app_executable(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.extension().and_then(|e| e.to_str()) == Some("app") {
+                let exe = path.join("Contents").join("MacOS").join("Godot");
+                if exe.is_file() {
+                    return Some(exe);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Collect all Godot executables within `dir`, searching up to `depth` levels.
@@ -159,19 +189,15 @@ fn collect_executables(dir: &Path, depth: usize) -> Vec<PathBuf> {
     result
 }
 
-/// Returns `true` if the path looks like a Godot executable.
+/// Returns `true` if the path looks like a Godot executable on Windows or Linux.
 fn is_godot_executable(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n.to_lowercase(),
         None => return false,
     };
-    // Must start with "godot" and be an executable file type.
     name.starts_with("godot") && (
-        name.ends_with(".exe")     // Windows
-        || name.contains("linux")  // Linux
-        || name.ends_with(".app")  // macOS app bundle
-        // macOS universal binary has no extension
-        || name.contains("macos")
+        name.ends_with(".exe")    // Windows
+        || name.contains("linux") // Linux
     )
 }
 
@@ -327,8 +353,31 @@ mod tests {
     fn is_godot_executable_recognises_platform_variants() {
         assert!(is_godot_executable(&PathBuf::from("Godot_v4.3-stable_win64.exe")));
         assert!(is_godot_executable(&PathBuf::from("Godot_v4.3-stable_linux.x86_64")));
-        assert!(is_godot_executable(&PathBuf::from("Godot_v4.3-stable_macos.universal")));
         assert!(!is_godot_executable(&PathBuf::from("GodotSharp")));
         assert!(!is_godot_executable(&PathBuf::from("readme.txt")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn find_macos_app_executable_finds_standard_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe_path = dir.path().join("Godot.app").join("Contents").join("MacOS").join("Godot");
+        std::fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
+        std::fs::write(&exe_path, b"").unwrap();
+
+        let found = find_macos_app_executable(dir.path()).unwrap();
+        assert_eq!(found, exe_path);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn find_macos_app_executable_finds_mono_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe_path = dir.path().join("Godot_mono.app").join("Contents").join("MacOS").join("Godot");
+        std::fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
+        std::fs::write(&exe_path, b"").unwrap();
+
+        let found = find_macos_app_executable(dir.path()).unwrap();
+        assert_eq!(found, exe_path);
     }
 }
