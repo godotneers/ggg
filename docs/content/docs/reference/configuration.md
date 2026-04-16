@@ -63,12 +63,13 @@ This is primarily useful for files that the Godot editor rewrites automatically 
 
 Declares an addon dependency. Each entry in the array describes one addon.
 
-Dependencies come in two flavours:
+Dependencies come in three kinds:
 
 - **Git dependencies** fetch a specific revision from a git repository. Use these for addons hosted on GitHub or any other git host.
 - **Archive dependencies** download a pre-built archive (`.zip`, `.tar.gz`, `.tgz`) directly from a URL. Use these for addons distributed as release assets rather than source repositories.
+- **Asset library dependencies** install directly from the [Godot Asset Library](https://godotengine.org/asset-library/). Use `ggg add asset` to add these; the numeric asset ID is stored in `ggg.toml`.
 
-The `git` and `url` fields are mutually exclusive: every dependency must have exactly one of them. Fields that belong to one source type are rejected on the other.
+Exactly one of `git`, `url`, or `asset_id` must be set on each dependency. Fields that belong to one kind are rejected on the others.
 
 After `ggg sync` runs, each dependency's resolved identity is recorded in `ggg.lock`. Subsequent syncs use the locked value unless the dependency changes in `ggg.toml`.
 
@@ -90,6 +91,16 @@ url              = "https://github.com/DmitriySalnikov/godot_debug_draw_3d/relea
 sha256           = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 strip_components = 1
 ```
+
+### Asset library dependency
+
+```toml
+[[dependency]]
+name     = "dialogic"
+asset_id = 1216
+```
+
+The asset ID is the numeric ID shown in the asset library URL (e.g. `godotengine.org/asset-library/asset/1216`). Use `ggg add asset` or `ggg search` to find IDs without having to visit the website manually.
 
 Multiple dependencies are declared by repeating the `[[dependency]]` header:
 
@@ -141,6 +152,22 @@ rev = "a1b2c3d4..."  # full commit SHA - most reproducible
 ```
 
 When `rev` is a tag or branch, `ggg sync` resolves it to a commit SHA and records that SHA in `ggg.lock`. Subsequent syncs use the locked SHA unless you explicitly update the dependency.
+
+---
+
+#### `asset_id`
+
+**Asset library deps only. Required when using an asset library source.** The numeric ID of the asset on the [Godot Asset Library](https://godotengine.org/asset-library/). Mutually exclusive with `git` and `url`.
+
+```toml
+asset_id = 1216
+```
+
+Use [`ggg add asset`](@/docs/reference/commands/add.md) or [`ggg search`](@/docs/reference/commands/search.md) to look up asset IDs without visiting the website manually.
+
+Asset library dependencies default to `strip_components = 1` because the asset library always packages assets inside a top-level folder. Override this in `ggg.toml` if needed.
+
+Use [`ggg update`](@/docs/reference/commands/update.md) to check for and apply newer versions of asset library dependencies.
 
 ---
 
