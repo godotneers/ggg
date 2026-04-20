@@ -4,9 +4,9 @@ weight = 2
 +++
 
 ```
-ggg add git <url>[@<rev>] [--yes]
+ggg add git <url>[@<rev>] [--name <name>] [--yes]
 ggg add archive <url> [--name <name>] [--strip-components <n>] [--sha256 <hash>]
-ggg add asset [<name-or-id>] [--id <N>] [--yes]
+ggg add asset [<name-or-id>] [--id <N>] [--name <name>] [--yes]
 ggg add <url-or-name>
 ```
 
@@ -40,6 +40,8 @@ a1b2c3d4...  full commit SHA
 ```
 
 `ggg add` contacts the remote to verify the revision exists before writing anything. A short SHA of the resolved commit is printed as confirmation. If the revision cannot be found the command fails without modifying `ggg.toml`.
+
+**`--name`:** override the dependency name instead of accepting the suggested one or being prompted.
 
 **Name:** a short identifier used in CLI output and as the argument to `ggg remove`. A name is suggested based on the repository name (lowercased, `.git` suffix removed). Press Enter to accept it or type a different one.
 
@@ -114,6 +116,8 @@ Searches the [Godot Asset Library](https://godotengine.org/asset-library/) and a
 **Query:** a name or keyword to search for. If you already know the numeric asset ID, pass it directly as the query or use `--id`.
 
 **`--id`:** bypass the search and add the asset with this ID directly. Useful when you have the asset page URL from the website.
+
+**`--name`:** override the dependency name instead of accepting the suggested one or being prompted.
 
 **`--yes`:** accept the suggested dependency name without prompting.
 

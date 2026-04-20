@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-04-17
+## [0.2.0] - 2026-04-20
+
+### Added
+- It is now possible to specify a custom name for dependencies when adding them with a `--name` flag rather than having to do it interactively.
 
 ### Fixed
 

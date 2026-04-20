@@ -23,7 +23,7 @@ use crate::config::{Config, Dependency};
 use crate::dependency::resolver;
 use crate::godot::asset_lib;
 
-pub fn run_git(git_url: Option<&str>, yes: bool) -> Result<()> {
+pub fn run_git(git_url: Option<&str>, name_arg: Option<&str>, yes: bool) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
     let mut config = Config::load(ggg_toml)?;
     let theme = ColorfulTheme::default();
@@ -60,14 +60,7 @@ pub fn run_git(git_url: Option<&str>, yes: bool) -> Result<()> {
     };
 
     let default_name = infer_name_from_git(&git);
-    let name = if yes {
-        default_name
-    } else {
-        Input::with_theme(&theme)
-            .with_prompt("Name")
-            .default(default_name)
-            .interact_text()?
-    };
+    let name = resolve_name(name_arg, Some(default_name), yes, &theme)?;
 
     if config.dependency.iter().any(|d| d.name == name) {
         bail!("a dependency named {:?} already exists in ggg.toml", name);
@@ -107,13 +100,7 @@ pub fn run_archive(archive_url: Option<&str>, name_arg: Option<&str>, strip_comp
         bail!("unrecognised archive format in URL {url:?}; supported: .zip, .tar.gz, .tgz");
     }
 
-    let name = match name_arg {
-        Some(n) => n.to_owned(),
-        None => Input::with_theme(&theme)
-            .with_prompt("Name")
-            .interact_text()?,
-    };
-
+    let name = resolve_name(name_arg, None, false, &theme)?;
     if name.is_empty() {
         bail!("dependency name cannot be empty");
     }
@@ -146,9 +133,9 @@ pub fn run_bare(input: &str, yes: bool) -> Result<()> {
     if input.ends_with(".zip") || input.ends_with(".tar.gz") || input.ends_with(".tgz") {
         run_archive(Some(input), None, None, None)
     } else if input.contains("://") || input.ends_with(".git") || input.contains(':') {
-        run_git(Some(input), yes)
+        run_git(Some(input), None, yes)
     } else {
-        run_asset(Some(input), None, yes)
+        run_asset(Some(input), None, None, yes)
     }
 }
 
@@ -161,7 +148,7 @@ pub fn run_bare(input: &str, yes: bool) -> Result<()> {
 /// - 1 result: confirmation prompt (skipped with `--yes`).
 /// - 2-5 results: interactive picker with a Cancel option.
 /// - 6+ results: error suggesting `ggg search`.
-pub fn run_asset(query: Option<&str>, id_override: Option<u32>, yes: bool) -> Result<()> {
+pub fn run_asset(query: Option<&str>, id_override: Option<u32>, name_arg: Option<&str>, yes: bool) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
     let mut config = Config::load(ggg_toml)?;
     let theme = ColorfulTheme::default();
@@ -233,19 +220,14 @@ pub fn run_asset(query: Option<&str>, id_override: Option<u32>, yes: bool) -> Re
     // Confirm and add.
     let default_name = infer_name_from_asset(&detail.title);
 
-    let name = if yes {
-        default_name
-    } else {
+    if name_arg.is_none() && !yes {
         println!("Found: {} (v{})", detail.title, detail.version_string);
         println!("  Author:  {}", detail.author);
         println!("  License: {}", detail.license);
         println!("  Browse:  {}", detail.browse_url);
         println!();
-        Input::with_theme(&theme)
-            .with_prompt("Dependency name")
-            .default(default_name)
-            .interact_text()?
-    };
+    }
+    let name = resolve_name(name_arg, Some(default_name), yes, &theme)?;
 
     if name.is_empty() {
         bail!("dependency name cannot be empty");
@@ -266,6 +248,25 @@ pub fn run_asset(query: Option<&str>, id_override: Option<u32>, yes: bool) -> Re
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn resolve_name(
+    name_arg: Option<&str>,
+    default: Option<String>,
+    yes: bool,
+    theme: &ColorfulTheme,
+) -> Result<String> {
+    if let Some(n) = name_arg {
+        return Ok(n.to_owned());
+    }
+    if yes {
+        return Ok(default.unwrap_or_default());
+    }
+    let mut b = Input::with_theme(theme).with_prompt("Name");
+    if let Some(d) = default {
+        b = b.default(d);
+    }
+    Ok(b.interact_text()?)
+}
 
 /// Split `s` into a git URL and an optional revision.
 fn parse_url_rev(s: &str) -> (String, Option<String>) {
@@ -316,6 +317,27 @@ fn infer_name_from_git(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_name_uses_arg_over_default() {
+        let theme = ColorfulTheme::default();
+        let result = resolve_name(Some("custom"), Some("inferred".to_owned()), false, &theme).unwrap();
+        assert_eq!(result, "custom");
+    }
+
+    #[test]
+    fn resolve_name_uses_default_when_yes() {
+        let theme = ColorfulTheme::default();
+        let result = resolve_name(None, Some("inferred".to_owned()), true, &theme).unwrap();
+        assert_eq!(result, "inferred");
+    }
+
+    #[test]
+    fn resolve_name_arg_takes_precedence_over_yes() {
+        let theme = ColorfulTheme::default();
+        let result = resolve_name(Some("explicit"), Some("inferred".to_owned()), true, &theme).unwrap();
+        assert_eq!(result, "explicit");
+    }
 
     #[test]
     fn https_url_with_rev() {
