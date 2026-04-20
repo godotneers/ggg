@@ -18,7 +18,8 @@ use anyhow::{Context, Result};
 use crate::config::{Config, DepKind};
 use crate::dependency::cache::DependencyCache;
 use crate::dependency::lockfile::LockFile;
-use crate::utils::plan::resolve_dependency;
+use crate::dependency::ensure::ensure_dependency;
+use crate::utils::path_key;
 
 const METADATA_FILE: &str = ".ggg_dep_info.toml";
 
@@ -31,7 +32,7 @@ pub fn run(name: &str, show_all: bool) -> Result<()> {
     let mut lock = LockFile::load_or_empty(Path::new("ggg.lock"))?;
     let dep_cache = DependencyCache::from_env()?;
 
-    let (resolved, _note) = resolve_dependency(dep, &lock, &dep_cache)
+    let (resolved, _note) = ensure_dependency(dep, &lock, &dep_cache)
         .with_context(|| format!("failed to resolve {:?}", name))?;
 
     lock.upsert(&resolved);
@@ -95,15 +96,7 @@ fn collect_files(dir: &Path, prefix: &Path, out: &mut Vec<String>) -> Result<()>
         if path.is_dir() {
             collect_files(&path, &child, out)?;
         } else if path.is_file() {
-            let key = child
-                .components()
-                .filter_map(|c| match c {
-                    std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("/");
-            out.push(key);
+            out.push(path_key(&child));
         }
     }
     Ok(())

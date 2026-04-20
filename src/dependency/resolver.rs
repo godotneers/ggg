@@ -1,21 +1,26 @@
-//! Resolving a dependency revision to a canonical commit SHA.
+//! Resolving a dependency to the information needed to download the correct
+//! version.
 //!
-//! A `rev` in `ggg.toml` can be any of:
+//! For each dependency kind, resolution means something different:
 //!
-//! - A branch name (`"main"`, `"develop"`)
-//! - A tag (`"v1.2.3"`)
-//! - A full commit SHA (`"a1b2c3d4..."`)
+//! - **Git** - a branch name or tag is resolved to a full 40-character commit
+//!   SHA via the git protocol.  Bare SHAs pass through without a network call.
+//! - **Archive** - the URL is already in the config; the sha256 field (if
+//!   present) is carried through as an integrity hint.  No network call.
+//! - **Asset Library** - an asset ID is resolved to a download URL via the
+//!   Godot Asset Library API.  The archive SHA is not known until the file is
+//!   downloaded.
 //!
-//! [`resolve`] always returns a full 40-character hex commit SHA. For bare
-//! SHAs the input is validated and returned as-is - no network call needed.
-//! For branches and tags the remote is queried via the git protocol.
+//! [`resolve_dependency`] is the unified entry point.  [`resolve`] is kept as
+//! a lower-level git-only helper used by the sync re-resolve fallback.
 
 use anyhow::{bail, Context, Result};
 use gix::bstr::ByteSlice;
 use gix::progress::Discard;
 use gix::protocol::handshake::Ref;
 
-use crate::config::Dependency;
+use crate::config::{DepKind, Dependency};
+use crate::dependency::lockfile::LockFile;
 use crate::dependency::ResolvedDependency;
 
 /// Resolve `dep.rev` to a full commit SHA and return a [`ResolvedDependency`].
@@ -45,6 +50,113 @@ pub fn resolve(dep: &Dependency) -> Result<ResolvedDependency> {
             .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?
     };
     Ok(ResolvedDependency { dep: dep.clone(), sha, resolved_url: None, asset_version: None })
+}
+
+/// Resolve `dep` against `lock`, returning a [`ResolvedDependency`] that
+/// contains enough information to download the correct version and a
+/// short human-readable note describing how the version was determined.
+///
+/// - **Git**: SHA from lock, or from the remote if unlocked.
+/// - **Archive**: SHA from lock, or from the `sha256` config field (may be
+///   empty if neither is present - the sha is computed post-download).
+/// - **Asset Library**: URL + SHA from lock, or URL from the asset library
+///   API (SHA is empty until the archive is downloaded).
+pub fn resolve_dependency(
+    dep: &Dependency,
+    lock: &LockFile,
+) -> Result<(ResolvedDependency, String)> {
+    match dep.kind() {
+        DepKind::Git { git, rev } => {
+            if let Some(sha) = lock.locked_sha(&dep.name, git, rev) {
+                let note = format!("locked {}", &sha[..12]);
+                return Ok((
+                    ResolvedDependency {
+                        dep: dep.clone(),
+                        sha: sha.to_owned(),
+                        resolved_url: None,
+                        asset_version: None,
+                    },
+                    note,
+                ));
+            }
+            let r = resolve(dep)
+                .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?;
+            let note = format!("resolved {}", &r.sha[..12]);
+            Ok((r, note))
+        }
+
+        DepKind::Archive { url, sha256, .. } => {
+            if let Some(locked_sha) = lock.locked_archive_sha(&dep.name, url) {
+                let note = format!("locked {}", &locked_sha[..8]);
+                return Ok((
+                    ResolvedDependency {
+                        dep: dep.clone(),
+                        sha: locked_sha.to_owned(),
+                        resolved_url: None,
+                        asset_version: None,
+                    },
+                    note,
+                ));
+            }
+            // sha may be empty if no sha256 field; it will be computed on download.
+            Ok((
+                ResolvedDependency {
+                    dep: dep.clone(),
+                    sha: sha256.unwrap_or("").to_owned(),
+                    resolved_url: None,
+                    asset_version: None,
+                },
+                String::new(),
+            ))
+        }
+
+        DepKind::AssetLib { asset_id } => {
+            if let Some(entry) = lock.locked_asset_lib(&dep.name, asset_id) {
+                let url = entry
+                    .url
+                    .as_deref()
+                    .with_context(|| format!("lock entry for {:?} missing url", dep.name))?;
+                let archive_sha = entry
+                    .archive_sha
+                    .as_deref()
+                    .with_context(|| {
+                        format!("lock entry for {:?} missing archive_sha", dep.name)
+                    })?;
+                let version_label = entry
+                    .asset_version
+                    .map(|v| format!(" (version {})", v))
+                    .unwrap_or_default();
+                return Ok((
+                    ResolvedDependency {
+                        dep: dep.clone(),
+                        sha: archive_sha.to_owned(),
+                        resolved_url: Some(url.to_owned()),
+                        asset_version: entry.asset_version,
+                    },
+                    format!("locked{}", version_label),
+                ));
+            }
+
+            // No lock entry - resolve the download URL via the asset library API.
+            // The archive SHA is not known until the file is actually downloaded.
+            println!("  {} - fetching from Godot Asset Library...", dep.name);
+            let detail = crate::godot::asset_lib::get_asset(asset_id).with_context(|| {
+                format!(
+                    "failed to fetch asset {:?} (id={}) from the Godot Asset Library",
+                    dep.name, asset_id,
+                )
+            })?;
+            Ok((
+                ResolvedDependency {
+                    dep: dep.clone(),
+                    sha: String::new(),
+                    resolved_url: Some(detail.download_url),
+                    asset_version: Some(detail.version),
+                },
+                format!("downloaded v{}", detail.version_string),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

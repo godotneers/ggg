@@ -135,6 +135,9 @@ enum AddCommand {
     Git {
         /// Git URL, optionally with @rev suffix
         url: Option<String>,
+        /// Dependency name (overrides the name inferred from the URL)
+        #[arg(long)]
+        name: Option<String>,
         /// Accept all inferred defaults without prompting
         #[arg(long, short = 'y')]
         yes: bool,
@@ -170,6 +173,9 @@ enum AddCommand {
         /// Use this asset ID directly, skipping the search
         #[arg(long)]
         id: Option<u32>,
+        /// Dependency name (overrides the name inferred from the asset title)
+        #[arg(long)]
+        name: Option<String>,
         /// Accept inferred defaults without prompting
         #[arg(long, short = 'y')]
         yes: bool,
@@ -192,15 +198,15 @@ fn main() -> Result<()> {
         Command::Edit { args }             => commands::edit::run(&args),
         Command::Run { args }              => commands::run::run(&args),
         Command::Add(add_cmd) => match add_cmd {
-            AddCommand::Git { url, yes } =>
-                commands::add::run_git(url.as_deref(), yes),
+            AddCommand::Git { url, name, yes } =>
+                commands::add::run_git(url.as_deref(), name.as_deref(), yes),
             AddCommand::Archive { url, name, strip_components, sha256 } =>
                 commands::add::run_archive(url.as_deref(), name.as_deref(), strip_components, sha256.as_deref()),
-            AddCommand::Asset { query, id, yes } =>
-                commands::add::run_asset(query.as_deref(), id, yes),
+            AddCommand::Asset { query, id, name, yes } =>
+                commands::add::run_asset(query.as_deref(), id, name.as_deref(), yes),
             AddCommand::Url(args) => match args.first().map(String::as_str) {
                 Some(input) => commands::add::run_bare(input, false),
-                None        => commands::add::run_git(None, false),
+                None        => commands::add::run_git(None, None, false),
             },
         },
         Command::Deps                      => commands::deps::run(),

@@ -1,16 +1,11 @@
-//! Installing a cached dependency tree into a Godot project.
+//! Sync planning and execution for all dependencies.
 //!
-//! [`plan_install`] computes what would be installed (files to write plus any
-//! conflicts) without touching disk.  [`execute_install`] carries out a plan
-//! that has already been checked for conflicts.
+//! [`plan`] resolves and downloads every dependency declared in `ggg.toml` and
+//! computes what would change on disk, without writing anything.  [`execute`]
+//! carries out a conflict-free plan.
 //!
-//! [`plan_cleanup`] computes which stale files (left by a removed or remapped
-//! dependency) would be deleted, separating unmodified files (safe to delete)
-//! from user-modified ones (conflicts).  [`execute_cleanup`] carries out the
-//! deletion.
-//!
-//! `sync.rs` always runs the plan phase across all dependencies first, and
-//! only calls the execute functions when every plan is conflict-free.
+//! Callers are expected to check [`SyncPlan`] for conflicts (or `--dry-run`)
+//! between the two calls.
 //!
 //! # Conflict detection
 //!
@@ -19,38 +14,39 @@
 //! - The file is recorded in [`LocalState`] with the same path **and** the
 //!   same content hash (GGG-owned, not modified by the user).
 //! - The state file was absent when sync started (recovery mode) and the
-//!   on-disk hash matches what GGG would install - indicating a prior install
-//!   whose state record was lost.
+//!   on-disk hash matches what GGG would install.
 //!
 //! Any other existing file is a conflict.  Pass `force = true` to skip all
 //! conflict checks.
 //!
 //! # Atomicity
 //!
-//! Files are staged to a temporary directory created inside the project root
-//! (ensuring the same filesystem as the destination), then renamed into place.
-//! A rename of a single file is atomic on all major operating systems.  The
-//! sequence of renames is not atomic, but a crash mid-way leaves only
-//! partially-installed files whose hashes do not match the state record; the
-//! next sync detects this via the ownership check and reinstalls cleanly.
+//! Files are staged to a temporary directory inside the project root (same
+//! filesystem as the destination), then renamed into place one at a time.  A
+//! crash mid-way leaves only partially-installed files whose hashes do not
+//! match the state record; the next sync reinstalls them cleanly.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 
-use crate::config::DepKind;
-use crate::dependency::ResolvedDependency;
+use crate::config::{Config, DepKind};
+use crate::dependency::cache::DependencyCache;
+use crate::dependency::ensure::ensure_dependency;
+use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{InstalledFile, LocalState, StateEntry};
+use crate::dependency::ResolvedDependency;
+use crate::utils::path_key;
 
 /// Metadata filename written into every cache entry; excluded from project
 /// installs.
 const METADATA_FILE: &str = ".ggg_dep_info.toml";
 
 // ---------------------------------------------------------------------------
-// Public API
+// Public types
 // ---------------------------------------------------------------------------
 
 /// Everything needed to install one dependency - computed without writing
@@ -79,7 +75,7 @@ impl Conflicts {
     }
 }
 
-/// What [`plan_cleanup`] found: files safe to delete and files that block
+/// What the cleanup plan found: files safe to delete and files that block
 /// deletion because the user modified them.
 pub struct CleanupPlan {
     /// Files to remove: (absolute path, display key).
@@ -88,12 +84,91 @@ pub struct CleanupPlan {
     pub modified: Vec<String>,
 }
 
-/// Compute what would be installed for `dep` without writing anything to disk.
+/// One dependency's resolved identity together with its install plan.
+pub struct DepWork {
+    pub resolved: ResolvedDependency,
+    /// Short human-readable note about how the SHA was obtained.
+    pub resolve_note: String,
+    pub plan: InstallPlan,
+}
+
+/// The full plan for a sync run: one [`DepWork`] per dependency plus the
+/// stale-file cleanup plan.
+pub struct SyncPlan {
+    pub works: Vec<DepWork>,
+    pub cleanup: CleanupPlan,
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Resolve, download (if needed), and plan the install for every dependency
+/// in `config`.  Nothing is written to `project_root`.
 ///
-/// Set `force` to skip all conflict checks.  `force_overwrite` is a list of
-/// glob patterns (e.g. `**/*.import`) matched against project-relative paths;
-/// files that match bypass conflict detection and are always overwritten.
-pub fn plan_install(
+/// Pass `force = true` to suppress conflict detection.
+pub fn plan(
+    config: &Config,
+    lock: &LockFile,
+    old_state: &LocalState,
+    state_present: bool,
+    dep_cache: &DependencyCache,
+    project_root: &Path,
+    force: bool,
+) -> Result<SyncPlan> {
+    let mut works: Vec<DepWork> = Vec::new();
+
+    for dep in &config.dependency {
+        let (resolved, resolve_note) = ensure_dependency(dep, lock, dep_cache)?;
+
+        let cache_dir = dep_cache.entry_path(&resolved);
+
+        let force_overwrite = config.sync.as_ref()
+            .map(|s| s.force_overwrite.as_slice())
+            .unwrap_or(&[]);
+
+        let install_plan = plan_install(&resolved, &cache_dir, project_root, old_state, force, force_overwrite)
+            .with_context(|| format!("failed to plan install for {:?}", dep.name))?;
+
+        works.push(DepWork { resolved, resolve_note, plan: install_plan });
+    }
+
+    let new_entries: Vec<StateEntry> = works.iter().map(|w| w.plan.entry.clone()).collect();
+    let cleanup = plan_cleanup(old_state, &new_entries, project_root, state_present, force)?;
+
+    Ok(SyncPlan { works, cleanup })
+}
+
+/// Write files and remove stale entries as described by `sync_plan`.
+///
+/// Should only be called when `sync_plan` has no conflicts.
+pub fn execute(sync_plan: &SyncPlan, project_root: &Path) -> Result<()> {
+    for work in &sync_plan.works {
+        execute_install(&work.plan, project_root)
+            .with_context(|| format!("failed to install {:?}", work.resolved.dep.name))?;
+    }
+    execute_cleanup(&sync_plan.cleanup, project_root)
+}
+
+/// Build a map from project-relative path key to absolute cache path for all
+/// files belonging to `dep`.  Used by `ggg diff` to locate the original
+/// version of a modified file.
+pub fn cache_file_map(
+    dep: &ResolvedDependency,
+    cache_dir: &Path,
+) -> Result<HashMap<String, PathBuf>> {
+    let pairs = collect_file_pairs(dep, cache_dir)?;
+    Ok(pairs
+        .into_iter()
+        .map(|(cache_path, proj_path)| (path_key(&proj_path), cache_path))
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Install planning and execution
+// ---------------------------------------------------------------------------
+
+fn plan_install(
     dep: &ResolvedDependency,
     cache_dir: &Path,
     project_root: &Path,
@@ -102,7 +177,6 @@ pub fn plan_install(
     force_overwrite: &[String],
 ) -> Result<InstallPlan> {
     let pairs = collect_file_pairs(dep, cache_dir)?;
-
     let overwrite_set = build_overwrite_set(force_overwrite)?;
 
     let conflicts = if force {
@@ -111,9 +185,6 @@ pub fn plan_install(
         collect_conflicts(&pairs, project_root, state, &overwrite_set)?
     };
 
-    // Build the state entry using cache hashes as the source of truth.
-    // This covers both to-write and already-up-to-date files so that a future
-    // cleanup can identify the full set owned by this dependency.
     let all_files: Vec<InstalledFile> = pairs
         .iter()
         .map(|(src, rel)| InstalledFile {
@@ -122,7 +193,6 @@ pub fn plan_install(
         })
         .collect();
 
-    // Determine which files actually need writing.
     let to_write: Vec<(PathBuf, PathBuf)> = pairs
         .into_iter()
         .filter(|(src, rel_dest)| {
@@ -132,7 +202,7 @@ pub fn plan_install(
             }
             match (hash_file(src), hash_file(&dest)) {
                 (Ok(sh), Ok(dh)) => sh != dh,
-                _ => true, // Cannot verify; write to be safe.
+                _ => true,
             }
         })
         .collect();
@@ -144,28 +214,18 @@ pub fn plan_install(
     })
 }
 
-/// Write the files described by `plan` to disk.
-///
-/// Should only be called when `plan.conflicts` is empty.
-pub fn execute_install(plan: &InstallPlan, project_root: &Path) -> Result<()> {
+fn execute_install(plan: &InstallPlan, project_root: &Path) -> Result<()> {
     if !plan.to_write.is_empty() {
         stage_and_install(&plan.to_write, project_root)?;
     }
     Ok(())
 }
 
-/// Compute which stale files should be removed and which are blocked by local
-/// modifications.
-///
-/// A stale file is one that the old state records as GGG-owned but that is
-/// absent from the new set of entries (dependency removed or map changed).
-///
-/// When `state_present` is `false` there is no old state to clean up from and
-/// the function returns an empty plan (printing a warning if needed).
-///
-/// Set `force` to move modified stale files into `to_remove` instead of
-/// `modified`.
-pub fn plan_cleanup(
+// ---------------------------------------------------------------------------
+// Cleanup planning and execution
+// ---------------------------------------------------------------------------
+
+fn plan_cleanup(
     old_state: &LocalState,
     new_entries: &[StateEntry],
     project_root: &Path,
@@ -196,17 +256,13 @@ pub fn plan_cleanup(
             if new_paths.contains(file.path.as_str()) {
                 continue;
             }
-
             let abs = project_root
                 .join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-
             if !abs.exists() {
                 continue;
             }
-
             let on_disk_hash = hash_file(&abs)
                 .with_context(|| format!("failed to hash {}", abs.display()))?;
-
             if on_disk_hash != file.hash && !force {
                 modified.push(file.path.clone());
             } else {
@@ -218,8 +274,7 @@ pub fn plan_cleanup(
     Ok(CleanupPlan { to_remove, modified })
 }
 
-/// Delete the stale files listed in `plan` and prune empty directories.
-pub fn execute_cleanup(plan: &CleanupPlan, project_root: &Path) -> Result<()> {
+fn execute_cleanup(plan: &CleanupPlan, project_root: &Path) -> Result<()> {
     let mut removed_dirs: Vec<PathBuf> = Vec::new();
     for (abs, display) in &plan.to_remove {
         std::fs::remove_file(abs)
@@ -237,13 +292,6 @@ pub fn execute_cleanup(plan: &CleanupPlan, project_root: &Path) -> Result<()> {
 // File enumeration
 // ---------------------------------------------------------------------------
 
-/// Build the list of `(absolute_cache_source, project_relative_destination)`
-/// pairs to install, honouring the `strip_components` and `map` fields in the
-/// dependency config.
-///
-/// For archive dependencies `strip_components` is applied first (on the
-/// cache-relative virtual paths), then the `map` entries are matched against
-/// the post-strip paths.  For git dependencies `strip_components` is always 0.
 fn collect_file_pairs(
     dep: &ResolvedDependency,
     cache_dir: &Path,
@@ -251,18 +299,13 @@ fn collect_file_pairs(
     let n_strip = match dep.dep.kind() {
         DepKind::Archive { strip_components, .. } => strip_components,
         DepKind::Git { .. } => dep.dep.strip_components.unwrap_or(0),
-        // Asset library archives always wrap content in a root folder; strip
-        // it by default.  The user can override with strip_components = 0 in
-        // ggg.toml if needed.
         DepKind::AssetLib { .. } => dep.dep.strip_components.unwrap_or(1),
     };
 
-    // Collect all files from the cache with their cache-relative paths.
     let mut raw: Vec<(PathBuf, PathBuf)> = Vec::new();
     collect_recursive(cache_dir, Path::new(""), &mut raw)
         .with_context(|| format!("failed to enumerate cache for {:?}", dep.dep.name))?;
 
-    // Apply strip_components to produce the virtual (post-strip) relative paths.
     let stripped: Vec<(PathBuf, PathBuf)> = raw
         .into_iter()
         .filter_map(|(abs, rel)| Some((abs, strip_rel_path(&rel, n_strip)?)))
@@ -272,26 +315,19 @@ fn collect_file_pairs(
         None => Ok(stripped),
         Some(map_entries) => {
             let mut pairs = Vec::new();
-
             for entry in map_entries {
                 let from = Path::new(&entry.from);
-                // `to` defaults to `from` when absent.
                 let to = entry.to.as_deref().map(Path::new).unwrap_or(from);
-
                 let mut matched = false;
                 for (abs, virtual_rel) in &stripped {
                     if virtual_rel == from {
-                        // Exact file match.
                         matched = true;
                         pairs.push((abs.clone(), to.to_path_buf()));
                     } else if let Ok(rest) = virtual_rel.strip_prefix(from) {
-                        // `from` is a directory prefix; keep the remainder
-                        // under `to`.
                         matched = true;
                         pairs.push((abs.clone(), to.join(rest)));
                     }
                 }
-
                 if !matched {
                     anyhow::bail!(
                         "dependency {:?}: map entry `from = {:?}` does not exist in the cached tree",
@@ -300,15 +336,11 @@ fn collect_file_pairs(
                     );
                 }
             }
-
             Ok(pairs)
         }
     }
 }
 
-/// Strip `n` leading path components from `path`. Returns `None` if the path
-/// has `n` or fewer components (the entry is entirely within the stripped
-/// prefix and should be skipped).
 fn strip_rel_path(path: &Path, n: u32) -> Option<PathBuf> {
     if n == 0 {
         return Some(path.to_path_buf());
@@ -320,8 +352,6 @@ fn strip_rel_path(path: &Path, n: u32) -> Option<PathBuf> {
     Some(comps[n as usize..].iter().collect())
 }
 
-/// Recursively enumerate files under `current`, recording them in `pairs` as
-/// `(absolute_path, dest_prefix/<file_relative_to_current>)`.
 fn collect_recursive(
     current: &Path,
     dest_prefix: &Path,
@@ -339,7 +369,6 @@ fn collect_recursive(
             continue;
         }
 
-        // Build the destination path for this entry.
         let child_dest = if dest_prefix == Path::new("") {
             PathBuf::from(&name)
         } else {
@@ -359,11 +388,6 @@ fn collect_recursive(
 // Conflict detection
 // ---------------------------------------------------------------------------
 
-/// Collect all conflicts without bailing - separates ggg-modified files from
-/// unmanaged files so callers can report them with appropriate messages.
-///
-/// Files whose project-relative path key matches `overwrite_set` are skipped:
-/// they will be unconditionally overwritten regardless of their on-disk state.
 fn collect_conflicts(
     pairs: &[(PathBuf, PathBuf)],
     project_root: &Path,
@@ -383,20 +407,18 @@ fn collect_conflicts(
         if overwrite_set.is_match(&key) {
             continue;
         }
+
         let on_disk_hash = hash_file(&dest)
             .with_context(|| format!("failed to hash {}", dest.display()))?;
-
-        // If the on-disk content is already identical to what we would write,
-        // overwriting changes nothing - safe regardless of what the state says.
         let would_install = hash_file(src)
             .with_context(|| format!("failed to hash cache file {}", src.display()))?;
+
         if on_disk_hash == would_install {
             continue;
         }
 
-        // Content differs. Safe only if ggg owns the file and it is unmodified.
         if state.is_owned(&key, &on_disk_hash) {
-            continue; // GGG-owned and unmodified; dep updated its content.
+            continue;
         }
 
         if state.is_managed_path(&key) {
@@ -413,18 +435,12 @@ fn collect_conflicts(
 // Staging and atomic rename into place
 // ---------------------------------------------------------------------------
 
-fn stage_and_install(
-    pairs: &[(PathBuf, PathBuf)],
-    project_root: &Path,
-) -> Result<Vec<InstalledFile>> {
-    // The staging directory lives inside the project root so that it is on the
-    // same filesystem as the destination, making renames atomic.
+fn stage_and_install(pairs: &[(PathBuf, PathBuf)], project_root: &Path) -> Result<Vec<InstalledFile>> {
     let tmp = tempfile::Builder::new()
         .prefix(".ggg-install-")
         .tempdir_in(project_root)
         .context("failed to create staging directory in project root")?;
 
-    // Copy all files into the staging area and compute their hashes.
     let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new();
 
     for (src, rel_dest) in pairs {
@@ -439,8 +455,6 @@ fn stage_and_install(
         std::fs::copy(src, &staged_path)
             .with_context(|| format!("failed to stage {}", src.display()))?;
 
-        // Project-side copies should be writable; only the cache copies are
-        // kept read-only.
         let mut perms = std::fs::metadata(&staged_path)
             .with_context(|| format!("failed to read metadata of {}", staged_path.display()))?
             .permissions();
@@ -454,16 +468,13 @@ fn stage_and_install(
         staged.push((staged_path, project_root.join(rel_dest), hash));
     }
 
-    // All copies succeeded - rename each staged file to its final location.
     let mut installed = Vec::new();
 
     for (staged_path, final_path, hash) in &staged {
         if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create directory {}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory {}", parent.display()))?;
         }
-
         std::fs::rename(staged_path, final_path)
             .with_context(|| format!("failed to install {}", final_path.display()))?;
 
@@ -471,14 +482,8 @@ fn stage_and_install(
             .strip_prefix(project_root)
             .expect("final_path is always under project_root");
 
-        installed.push(InstalledFile {
-            path: path_key(rel),
-            hash: hash.clone(),
-        });
+        installed.push(InstalledFile { path: path_key(rel), hash: hash.clone() });
     }
-
-    // TempDir::drop removes the staging directory (now containing only empty
-    // subdirectories) via remove_dir_all.
 
     Ok(installed)
 }
@@ -487,37 +492,17 @@ fn stage_and_install(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build a [`GlobSet`] from the `force_overwrite` pattern list.
-///
-/// Returns an error if any pattern is syntactically invalid.  An empty
-/// pattern list produces an empty set that matches nothing.
 fn build_overwrite_set(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
         builder.add(
-            Glob::new(p)
-                .with_context(|| format!("invalid force_overwrite pattern: {:?}", p))?,
+            Glob::new(p).with_context(|| format!("invalid force_overwrite pattern: {:?}", p))?,
         );
     }
     builder.build().context("failed to build force_overwrite glob set")
 }
 
-/// Build a map from project-relative path key to absolute cache path for all
-/// files belonging to `dep`.  Used by `ggg diff` to locate the original
-/// version of a modified file.
-pub fn cache_file_map(
-    dep: &ResolvedDependency,
-    cache_dir: &Path,
-) -> Result<std::collections::HashMap<String, PathBuf>> {
-    let pairs = collect_file_pairs(dep, cache_dir)?;
-    Ok(pairs
-        .into_iter()
-        .map(|(cache_path, proj_path)| (path_key(&proj_path), cache_path))
-        .collect())
-}
-
-/// Hash the contents of `path` and return the lowercase hex SHA-256 digest.
-pub fn hash_file(path: &Path) -> Result<String> {
+fn hash_file(path: &Path) -> Result<String> {
     let data = std::fs::read(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut h = Sha256::new();
@@ -525,21 +510,6 @@ pub fn hash_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
-/// Convert a relative [`Path`] to a forward-slash string for cross-platform
-/// consistency when stored in `.ggg.state`.
-fn path_key(rel: &Path) -> String {
-    rel.components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-/// Remove directories that became empty after stale file deletion, walking
-/// upward from each affected directory.  Stops before the project root.
-/// Errors are ignored since a leftover empty directory is harmless.
 fn prune_empty_dirs(dirs: &[PathBuf], project_root: &Path) {
     let mut unique = dirs.to_vec();
     unique.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
@@ -592,8 +562,6 @@ mod tests {
         ResolvedDependency { dep, sha: "abc123".into(), resolved_url: None, asset_version: None }
     }
 
-    /// Write `content` to `<dir>/<rel>`, creating parents as needed.
-    /// `rel` always uses forward slashes.
     fn write(dir: &Path, rel: &str, content: &[u8]) {
         let abs = dir.join(rel.split('/').collect::<PathBuf>());
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
@@ -621,7 +589,6 @@ mod tests {
         format!("{:x}", h.finalize())
     }
 
-    /// Build a LocalState where `dep` owns `path` with the hash of `content`.
     fn state_owns(dep: &str, path: &str, content: &[u8]) -> LocalState {
         let mut state = LocalState::default();
         state.upsert_entry(StateEntry {
@@ -634,8 +601,6 @@ mod tests {
         state
     }
 
-    /// Plan and execute an install, returning the state entry.
-    /// Panics if the plan has conflicts.
     fn inst(
         dep: &ResolvedDependency,
         cache: &Path,
@@ -748,7 +713,6 @@ mod tests {
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
-        // Mark the cache copy read-only, as the real cache does.
         let cache_file = cache.path().join("plugin.gd");
         let mut perms = std::fs::metadata(&cache_file).unwrap().permissions();
         perms.set_readonly(true);
@@ -815,8 +779,6 @@ mod tests {
 
     #[test]
     fn no_conflict_when_content_matches_regardless_of_state() {
-        // File exists on disk with the same bytes we'd install (e.g. asset
-        // library migration) - safe even without a state entry.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let content = b"# same";
@@ -834,8 +796,6 @@ mod tests {
 
     #[test]
     fn no_conflict_when_ggg_owns_file_and_dep_updated_content() {
-        // State records the old hash; dep now has new content.  GGG owns the
-        // file so it may be overwritten.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let old = b"# old";
@@ -866,14 +826,12 @@ mod tests {
             &LocalState::default(), false, &[],
         ).unwrap();
 
-        assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()),
-            "should report unmanaged conflict");
+        assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()));
         assert!(plan.conflicts.modified.is_empty());
     }
 
     #[test]
     fn conflict_message_flags_user_modified_ggg_file() {
-        // GGG installed original_content; user changed it; dep now has new_content.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(),   "plugin.gd", b"# new dep content");
@@ -886,8 +844,7 @@ mod tests {
             &state, false, &[],
         ).unwrap();
 
-        assert!(plan.conflicts.modified.contains(&"plugin.gd".to_string()),
-            "should report modified conflict");
+        assert!(plan.conflicts.modified.contains(&"plugin.gd".to_string()));
         assert!(plan.conflicts.unmanaged.is_empty());
     }
 
@@ -911,10 +868,6 @@ mod tests {
 
     #[test]
     fn force_overwrite_pattern_bypasses_conflict() {
-        // A file is on disk with different content than the cache, and is NOT
-        // recorded in the state (would normally be an unmanaged conflict).
-        // With a matching force_overwrite pattern it must not be reported as a
-        // conflict and must be overwritten on execute.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(),   "addons/gut/gut.import", b"# dep import");
@@ -927,8 +880,8 @@ mod tests {
             &LocalState::default(), false, &patterns,
         ).unwrap();
 
-        assert!(plan.conflicts.is_empty(), "force_overwrite file should not be a conflict");
-        assert_eq!(plan.to_write.len(), 1, "file with differing content should still be in to_write");
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(plan.to_write.len(), 1);
 
         execute_install(&plan, project.path()).unwrap();
         assert_eq!(read(project.path(), "addons/gut/gut.import"), b"# dep import");
@@ -936,13 +889,12 @@ mod tests {
 
     #[test]
     fn force_overwrite_does_not_affect_non_matching_files() {
-        // A non-matching file next to a matching one should still be conflict-checked.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd",     b"# dep");
-        write(cache.path(),   "plugin.import",  b"# dep import");
-        write(project.path(), "plugin.gd",     b"# user modified");
-        write(project.path(), "plugin.import",  b"# godot modified");
+        write(cache.path(),   "plugin.gd",    b"# dep");
+        write(cache.path(),   "plugin.import", b"# dep import");
+        write(project.path(), "plugin.gd",    b"# user modified");
+        write(project.path(), "plugin.import", b"# godot modified");
 
         let patterns = vec!["**/*.import".to_string()];
         let plan = plan_install(
@@ -951,10 +903,8 @@ mod tests {
             &LocalState::default(), false, &patterns,
         ).unwrap();
 
-        assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()),
-            "non-matching file should still be reported as conflict");
-        assert!(plan.conflicts.unmanaged.iter().all(|p| p != "plugin.import"),
-            "matching file should not be reported as conflict");
+        assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()));
+        assert!(plan.conflicts.unmanaged.iter().all(|p| p != "plugin.import"));
     }
 
     #[test]
@@ -970,7 +920,7 @@ mod tests {
             &LocalState::default(), false, &patterns,
         );
 
-        assert!(result.is_err(), "invalid glob pattern should return an error");
+        assert!(result.is_err());
     }
 
     // --- idempotency --------------------------------------------------------
@@ -982,7 +932,6 @@ mod tests {
         write(cache.path(), "addons/gut/gut.gd", b"# gut");
         write(cache.path(), "addons/gut/util.gd", b"# util");
 
-        // First install: both files should be written.
         let first = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
@@ -991,14 +940,12 @@ mod tests {
         assert_eq!(first.to_write.len(), 2);
         execute_install(&first, project.path()).unwrap();
 
-        // Second install: content is identical, nothing should be written.
         let second = plan_install(
             &make_dep("gut", None),
             cache.path(), project.path(),
             &LocalState::default(), false, &[],
         ).unwrap();
         assert_eq!(second.to_write.len(), 0);
-        // State entry still records all files.
         assert_eq!(second.entry.files.len(), 2);
     }
 
@@ -1009,7 +956,6 @@ mod tests {
         write(cache.path(), "a.gd", b"# a");
         write(cache.path(), "b.gd", b"# b");
 
-        // First install - capture state so the second install knows ownership.
         let first = plan_install(
             &make_dep("dep", None),
             cache.path(), project.path(),
@@ -1019,7 +965,6 @@ mod tests {
         let mut state = LocalState::default();
         state.upsert_entry(first.entry);
 
-        // Simulate dep updating b.gd in the cache.
         write(cache.path(), "b.gd", b"# b updated");
 
         let second = plan_install(
@@ -1111,10 +1056,8 @@ mod tests {
 
         let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
 
-        assert!(plan.modified.contains(&"plugin.gd".to_string()),
-            "modified stale file should be reported as a conflict");
+        assert!(plan.modified.contains(&"plugin.gd".to_string()));
         assert!(plan.to_remove.is_empty());
-        // File must still be on disk - we did not execute.
         assert!(exists(project.path(), "plugin.gd"));
     }
 
@@ -1138,7 +1081,6 @@ mod tests {
         let project  = TempDir::new().unwrap();
         let old_state = state_owns("dep", "plugin.gd", b"# content");
 
-        // File is not on disk - plan should be empty, execute should succeed.
         let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
         execute_cleanup(&plan, project.path()).unwrap();
     }
@@ -1150,8 +1092,7 @@ mod tests {
 
         let plan = plan_cleanup(
             &LocalState::default(), &[], project.path(),
-            false, // state_present = false
-            false,
+            false, false,
         ).unwrap();
         execute_cleanup(&plan, project.path()).unwrap();
 
@@ -1176,8 +1117,8 @@ mod tests {
     fn non_empty_dirs_not_pruned_after_cleanup() {
         let project = TempDir::new().unwrap();
         let content = b"# file";
-        write(project.path(), "addons/gut/gut.gd",           content);
-        write(project.path(), "addons/other/other.gd",       b"# other");
+        write(project.path(), "addons/gut/gut.gd",     content);
+        write(project.path(), "addons/other/other.gd", b"# other");
         let old_state = state_owns("gut", "addons/gut/gut.gd", content);
 
         let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
@@ -1185,7 +1126,7 @@ mod tests {
 
         assert!(!exists(project.path(), "addons/gut"));
         assert!(exists(project.path(),  "addons/other/other.gd"));
-        assert!(exists(project.path(),  "addons")); // still has other/
+        assert!(exists(project.path(),  "addons"));
     }
 
     #[test]
@@ -1195,7 +1136,6 @@ mod tests {
         write(project.path(), "plugin.gd", content);
         let old_state = state_owns("dep", "plugin.gd", content);
 
-        // plan without execute must not touch disk.
         plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
 
         assert!(exists(project.path(), "plugin.gd"));
@@ -1205,8 +1145,6 @@ mod tests {
 
     #[test]
     fn strip_components_one_strips_wrapper_dir() {
-        // Archive cache has a wrapper directory; strip_components = 1 should
-        // remove it so files land directly at the post-strip paths.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "wrapper/addons/gut/gut.gd",  b"# gut");
@@ -1226,8 +1164,6 @@ mod tests {
 
     #[test]
     fn strip_components_skips_entries_entirely_within_stripped_prefix() {
-        // A file living exactly at the stripped prefix level (e.g. a top-level
-        // README inside the wrapper) should be silently skipped.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "wrapper/README.md",         b"# readme");
@@ -1239,16 +1175,12 @@ mod tests {
             &LocalState::default(), false,
         ).unwrap();
 
-        // README.md is at depth 1 inside the wrapper; after stripping it
-        // becomes "README.md" and should be installed.
         assert!(exists(project.path(), "README.md"));
         assert!(exists(project.path(), "addons/gut/gut.gd"));
     }
 
     #[test]
     fn strip_then_map_uses_post_strip_paths() {
-        // strip_components = 1 removes "wrapper/"; the map `from` is written
-        // in terms of post-strip paths.
         let cache   = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "wrapper/addons/gut/gut.gd", b"# gut");

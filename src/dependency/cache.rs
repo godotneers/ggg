@@ -40,10 +40,6 @@ const METADATA_FILE: &str = ".ggg_dep_info.toml";
 
 use crate::cache::resolve_cache_root;
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// Manages the on-disk cache of dependency repository snapshots.
 pub struct DependencyCache {
     base: PathBuf,
@@ -71,30 +67,32 @@ impl DependencyCache {
         dir.is_dir() && dir.read_dir().map_or(false, |mut d| d.next().is_some())
     }
 
-    /// Extract the exported tree of a git `dep` from the bare repository at
-    /// `repo_path` into the cache.
+    /// Install a downloaded dependency artifact into the cache.
     ///
-    /// Files with the `export-ignore` gitattribute are excluded. All written
-    /// files are made read-only to prevent accidental modification.
-    ///
-    /// The install is atomic: files are written to a temporary directory first,
-    /// then renamed into place in one operation. A partial install leaves no
-    /// residue in the cache.
+    /// `path` is the value returned by [`super::download::download`]:
+    /// - For git deps: a temporary bare clone directory.
+    /// - For archive/asset-library deps: a temporary archive file.
     ///
     /// Returns the path to the installed cache entry.
-    pub fn install(&self, dep: &ResolvedDependency, repo_path: &Path) -> Result<PathBuf> {
-        let dest = self.dep_dir(dep);
-
-        // Already cached - nothing to do.
+    pub fn install(&self, dep: &ResolvedDependency, path: &Path) -> Result<PathBuf> {
         if self.contains(dep) {
-            return Ok(dest);
+            return Ok(self.dep_dir(dep));
         }
+        match dep.dep.kind() {
+            DepKind::Git { git, .. } => self.install_git(dep, git, path),
+            DepKind::Archive { url, .. } => self.install_archive(dep, url, path),
+            DepKind::AssetLib { .. } => {
+                let url = dep.resolved_url.as_deref()
+                    .expect("AssetLib ResolvedDependency must have resolved_url set");
+                self.install_archive(dep, url, path)
+            }
+        }
+    }
 
-        let DepKind::Git { git, .. } = dep.dep.kind() else {
-            anyhow::bail!("cache::install() called on non-git dependency {:?}", dep.dep.name);
-        };
-
+    fn install_git(&self, dep: &ResolvedDependency, git: &str, repo_path: &Path) -> Result<PathBuf> {
+        let dest = self.dep_dir(dep);
         let hash_dir = self.base.join(url_hash(&normalize_url(git)));
+
         let tmp_dir = tempfile::Builder::new()
             .prefix(".install-")
             .tempdir_in(&hash_dir)
@@ -114,68 +112,27 @@ impl DependencyCache {
         write_git_metadata(dep, tmp_dir.path())
             .context("failed to write dependency metadata")?;
 
-        // Atomic rename into final position.
         std::fs::rename(tmp_dir.path(), &dest)
             .with_context(|| format!("failed to move install into cache at {}", dest.display()))?;
 
-        // Keep the TempDir handle from deleting the (now-moved) directory.
         let _ = tmp_dir.keep();
-
         Ok(dest)
     }
 
-    /// Download and install an archive dependency into the cache.
-    ///
-    /// Creates a temp directory inside the cache hash directory (ensuring same
-    /// filesystem for an atomic rename), delegates the download and extraction
-    /// to [`super::archive`], then renames the result into the final cache
-    /// position keyed by the archive SHA-256.
-    ///
-    /// Returns the archive SHA-256 (the cache key / lock file entry).
-    pub fn install_archive(&self, dep: &crate::config::Dependency) -> Result<String> {
-        let DepKind::Archive { url, sha256, .. } = dep.kind() else {
-            anyhow::bail!("cache::install_archive() called on non-archive dependency {:?}", dep.name);
-        };
-        self.install_from_url(&dep.name, url, sha256)
-    }
+    fn install_archive(&self, dep: &ResolvedDependency, url: &str, archive: &Path) -> Result<PathBuf> {
+        let dest = self.dep_dir(dep);
 
-    /// Download and install an asset library dependency into the cache using
-    /// the URL resolved from the asset library API or lock file.
-    ///
-    /// Behaves identically to [`install_archive`] but accepts an explicit URL
-    /// and optional SHA-256 hint instead of reading them from a [`Dependency`].
-    ///
-    /// Returns the archive SHA-256 (the cache key / lock file entry).
-    pub fn install_asset_lib(&self, dep_name: &str, url: &str, sha256_hint: Option<&str>) -> Result<String> {
-        self.install_from_url(dep_name, url, sha256_hint)
-    }
-
-    /// Shared implementation: download `url` into a temporary directory, then
-    /// atomically rename it into `<base>/<url_hash(url)>/<archive_sha>/`.
-    fn install_from_url(&self, dep_name: &str, url: &str, sha256_hint: Option<&str>) -> Result<String> {
-        let hash_dir = self.base.join(url_hash(url));
-        std::fs::create_dir_all(&hash_dir)
-            .with_context(|| format!("failed to create cache directory {}", hash_dir.display()))?;
-
-        let tmp_dir = tempfile::Builder::new()
-            .prefix(".install-")
-            .tempdir_in(&hash_dir)
-            .context("failed to create temporary install directory")?;
-
-        let archive_sha = super::archive::download_and_extract_url(dep_name, url, sha256_hint, tmp_dir.path())
-            .with_context(|| format!("failed to download/extract {dep_name:?}"))?;
-
-        let dest = hash_dir.join(&archive_sha);
-        if dest.is_dir() {
-            // Another process raced us to the same version; our download is redundant.
-            return Ok(archive_sha);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
         }
+        std::fs::create_dir_all(&dest)
+            .with_context(|| format!("failed to create cache entry directory {}", dest.display()))?;
 
-        std::fs::rename(tmp_dir.path(), &dest)
-            .with_context(|| format!("failed to move archive install into cache at {}", dest.display()))?;
-        let _ = tmp_dir.keep();
+        extract_archive(&dep.dep.name, url, &dep.sha, archive, &dest)
+            .with_context(|| format!("failed to extract {:?} into cache", dep.dep.name))?;
 
-        Ok(archive_sha)
+        Ok(dest)
     }
 
     /// The directory where a dependency's cached files are stored.
@@ -240,6 +197,66 @@ fn url_hash(normalized: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(normalized.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+// ---------------------------------------------------------------------------
+// Archive extraction
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum ArchiveFormat { Zip, TarGz }
+
+fn detect_archive_format(url: &str) -> ArchiveFormat {
+    if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
+        ArchiveFormat::TarGz
+    } else {
+        ArchiveFormat::Zip
+    }
+}
+
+/// Scan `archive` for path traversal, extract into `dest_dir`, and write
+/// `.ggg_dep_info.toml`.
+fn extract_archive(
+    dep_name: &str,
+    url: &str,
+    archive_sha: &str,
+    archive: &Path,
+    dest_dir: &Path,
+) -> Result<()> {
+    use crate::utils::archive as archive_util;
+
+    let fmt = detect_archive_format(url);
+
+    match fmt {
+        ArchiveFormat::Zip   => archive_util::scan_zip(archive),
+        ArchiveFormat::TarGz => archive_util::scan_tar_gz(archive),
+    }
+    .with_context(|| format!("archive {dep_name:?} contains unsafe paths - refusing to extract"))?;
+
+    match fmt {
+        ArchiveFormat::Zip   => archive_util::extract_zip(archive, dest_dir),
+        ArchiveFormat::TarGz => archive_util::extract_tar_gz(archive, dest_dir),
+    }
+    .with_context(|| format!("failed to extract {dep_name:?}"))?;
+
+    write_archive_metadata(dep_name, url, archive_sha, dest_dir)
+        .context("failed to write archive dependency metadata")
+}
+
+#[derive(Serialize)]
+struct ArchiveDepInfo<'a> {
+    name:        &'a str,
+    url:         &'a str,
+    archive_sha: &'a str,
+}
+
+fn write_archive_metadata(name: &str, url: &str, archive_sha: &str, dest_dir: &Path) -> Result<()> {
+    let info = ArchiveDepInfo { name, url, archive_sha };
+    let content = toml_edit::ser::to_string_pretty(&info)
+        .context("failed to serialize archive metadata")?;
+    let path = dest_dir.join(METADATA_FILE);
+    std::fs::write(&path, &content)
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------

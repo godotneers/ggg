@@ -13,29 +13,6 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-// ---------------------------------------------------------------------------
-// Path safety
-// ---------------------------------------------------------------------------
-
-/// Check that `path_str` contains no absolute paths or `..` components.
-///
-/// Called on every archive entry before extraction begins.  Does NOT check
-/// post-strip paths - raw entry paths are validated as-is.
-pub fn check_path(path_str: &str) -> Result<()> {
-    if path_str.starts_with('/') || path_str.starts_with('\\') {
-        bail!("absolute path in archive: {path_str:?}");
-    }
-    for component in Path::new(path_str).components() {
-        if component == Component::ParentDir {
-            bail!("path traversal in archive: {path_str:?}");
-        }
-        // Reject drive-letter prefixes like C: on Windows.
-        if let Component::Prefix(_) = component {
-            bail!("absolute path prefix in archive: {path_str:?}");
-        }
-    }
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Scan
@@ -143,6 +120,26 @@ pub fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Check that `path_str` contains no absolute paths or `..` components.
+///
+/// Called on every archive entry before extraction begins.  Does NOT check
+/// post-strip paths - raw entry paths are validated as-is.
+fn check_path(path_str: &str) -> Result<()> {
+    if path_str.starts_with('/') || path_str.starts_with('\\') {
+        bail!("absolute path in archive: {path_str:?}");
+    }
+    for component in Path::new(path_str).components() {
+        if component == Component::ParentDir {
+            bail!("path traversal in archive: {path_str:?}");
+        }
+        // Reject drive-letter prefixes like C: on Windows.
+        if let Component::Prefix(_) = component {
+            bail!("absolute path prefix in archive: {path_str:?}");
+        }
+    }
+    Ok(())
+}
 
 /// Write a single file entry to `dest_dir/rel`, creating parent directories
 /// as needed, then mark the file read-only.

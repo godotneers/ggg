@@ -9,13 +9,12 @@
 //!
 //! # Flow
 //!
-//! 1. **Plan phase** - delegates to [`crate::utils::plan::resolve_and_plan`], which
-//!    resolves and downloads all dependencies and calls [`plan_install`] /
-//!    [`plan_cleanup`] without writing anything to disk.
+//! 1. **Plan phase** - [`crate::dependency::sync::plan`] resolves and downloads
+//!    all dependencies and computes what would change, without writing anything.
 //! 2. **Check** - if any plan has conflicts, or if `--dry-run` was given,
 //!    print a summary of what would happen (and any conflicts) and stop.
-//! 3. **Execute phase** - call [`execute_install`] and [`execute_cleanup`],
-//!    then write `ggg.lock` and `.ggg.state`.
+//! 3. **Execute phase** - [`crate::dependency::sync::execute`] writes files and
+//!    removes stale entries, then `ggg.lock` and `.ggg.state` are persisted.
 
 use std::path::Path;
 
@@ -23,12 +22,11 @@ use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::dependency::cache::DependencyCache;
-use crate::dependency::install::{execute_cleanup, execute_install, CleanupPlan};
 use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{LocalState, STATE_FILE};
 use crate::godot::cache::GodotCache;
 use crate::godot::engine;
-use crate::utils::plan::{resolve_and_plan, DepWork, SyncPlan};
+use crate::dependency::sync::{self, CleanupPlan, DepWork};
 
 use super::init::ensure_gitignore_entry;
 
@@ -46,22 +44,22 @@ pub fn run(dry_run: bool, force: bool) -> Result<()> {
 
     let dep_cache = DependencyCache::from_env()?;
 
-    let SyncPlan { works, cleanup } =
-        resolve_and_plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, force)?;
+    let sync_plan =
+        sync::plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, force)?;
 
     // -------------------------------------------------------------------------
     // Check: any conflicts or --dry-run -> print the plan and stop.
     // -------------------------------------------------------------------------
 
-    let has_conflicts = works.iter().any(|w| !w.plan.conflicts.is_empty())
-        || !cleanup.modified.is_empty();
+    let has_conflicts = sync_plan.works.iter().any(|w| !w.plan.conflicts.is_empty())
+        || !sync_plan.cleanup.modified.is_empty();
 
     if dry_run || has_conflicts {
-        print_plan(&works, &cleanup);
+        print_plan(&sync_plan.works, &sync_plan.cleanup);
     }
 
     if has_conflicts {
-        print_conflicts(&works, &cleanup);
+        print_conflicts(&sync_plan.works, &sync_plan.cleanup);
         if !dry_run {
             anyhow::bail!("sync blocked: resolve the conflicts above or run with --force");
         }
@@ -76,38 +74,26 @@ pub fn run(dry_run: bool, force: bool) -> Result<()> {
     // Execute phase: write files, remove stale entries, persist state.
     // -------------------------------------------------------------------------
 
-    for work in &works {
-        execute_install(&work.plan, &project_root)
-            .with_context(|| format!("failed to install dependency {:?}", work.resolved.dep.name))?;
+    sync::execute(&sync_plan, &project_root)?;
 
+    let mut new_state = LocalState::default();
+    for work in &sync_plan.works {
         let total   = work.plan.entry.files.len();
         let written = work.plan.to_write.len();
         if written > 0 {
             println!(
                 "  {} ({}): installed {} file{} ({} total)",
-                work.resolved.dep.name,
-                work.resolve_note,
-                written,
-                if written == 1 { "" } else { "s" },
-                total,
+                work.resolved.dep.name, work.resolve_note,
+                written, if written == 1 { "" } else { "s" }, total,
             );
         } else {
             println!(
                 "  {} ({}): up to date ({} file{})",
-                work.resolved.dep.name,
-                work.resolve_note,
-                total,
-                if total == 1 { "" } else { "s" },
+                work.resolved.dep.name, work.resolve_note,
+                total, if total == 1 { "" } else { "s" },
             );
         }
-
         lock.upsert(&work.resolved);
-    }
-
-    execute_cleanup(&cleanup, &project_root)?;
-
-    let mut new_state = LocalState::default();
-    for work in &works {
         new_state.upsert_entry(work.plan.entry.clone());
     }
 

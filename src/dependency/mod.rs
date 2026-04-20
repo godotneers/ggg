@@ -1,10 +1,10 @@
-pub mod archive;
 pub mod cache;
 pub mod download;
-pub mod install;
+pub mod ensure;
 pub mod lockfile;
 pub mod resolver;
 pub mod state;
+pub mod sync;
 
 use crate::config::Dependency;
 
