@@ -129,13 +129,13 @@ pub fn run_archive(archive_url: Option<&str>, name_arg: Option<&str>, strip_comp
 /// - Archive extensions (`.zip`, `.tar.gz`, `.tgz`) -> archive dep.
 /// - URL-like strings (`://`, `.git`, SCP-style) -> git dep.
 /// - Anything else (plain name or numeric ID) -> asset library search.
-pub fn run_bare(input: &str, yes: bool) -> Result<()> {
+pub fn run_bare(input: &str, name_arg: Option<&str>, yes: bool) -> Result<()> {
     if input.ends_with(".zip") || input.ends_with(".tar.gz") || input.ends_with(".tgz") {
-        run_archive(Some(input), None, None, None)
+        run_archive(Some(input), name_arg, None, None)
     } else if input.contains("://") || input.ends_with(".git") || input.contains(':') {
-        run_git(Some(input), None, yes)
+        run_git(Some(input), name_arg, yes)
     } else {
-        run_asset(Some(input), None, None, yes)
+        run_asset(Some(input), None, name_arg, yes)
     }
 }
 

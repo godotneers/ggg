@@ -1,7 +1,7 @@
 use ggg::commands;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+use anyhow::{bail, Result};
+use clap::{Args, Parser, Subcommand};
 
 /// A project manager for Godot games.
 ///
@@ -52,15 +52,19 @@ enum Command {
 
     /// Add a new dependency
     ///
-    /// Use `ggg add git <url>[@rev]` for git repositories,
-    /// `ggg add archive <url>` for pre-built archives (.zip, .tar.gz, .tgz),
-    /// or `ggg add asset <name|id>` to search the Godot Asset Library.
+    /// The type keyword (git, archive, asset) is optional; ggg infers it when omitted:
+    ///   - archive extensions (.zip, .tar.gz, .tgz) -> archive
+    ///   - git-style URLs (containing ://, ending in .git, or SCP-style) -> git
+    ///   - anything else -> Godot Asset Library search
     ///
-    /// Bare `ggg add <input>` auto-detects the type: archive extensions route
-    /// to archive, git URLs route to git, and anything else searches the asset
-    /// library.
-    #[command(subcommand)]
-    Add(AddCommand),
+    /// Examples:
+    ///   ggg add https://github.com/user/addon.git@v1.0
+    ///   ggg add git https://github.com/user/addon.git@v1.0
+    ///   ggg add archive https://example.com/addon.zip --sha256 <hash>
+    ///   ggg add asset gut
+    ///   ggg add asset --id 54
+    #[command(verbatim_doc_comment)]
+    Add(AddArgs),
 
     /// Search the Godot Asset Library
     ///
@@ -126,68 +130,35 @@ enum Command {
     },
 }
 
-#[derive(Subcommand)]
-enum AddCommand {
-    /// Add a git repository dependency
-    ///
-    /// The URL may include an optional @rev suffix:
-    ///   ggg add git https://github.com/user/repo.git@v1.0.0
-    Git {
-        /// Git URL, optionally with @rev suffix
-        url: Option<String>,
-        /// Dependency name (overrides the name inferred from the URL)
-        #[arg(long)]
-        name: Option<String>,
-        /// Accept all inferred defaults without prompting
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
+#[derive(Args)]
+struct AddArgs {
+    /// Dependency type (git, archive, asset) or URL/query for auto-detection
+    #[arg(value_name = "TYPE_OR_INPUT")]
+    type_or_input: Option<String>,
 
-    /// Add a pre-built archive dependency (.zip, .tar.gz, .tgz)
-    Archive {
-        /// Archive URL
-        url: Option<String>,
-        /// Dependency name (required; prompted if absent)
-        #[arg(long)]
-        name: Option<String>,
-        /// Strip N leading path components from archive entries
-        #[arg(long)]
-        strip_components: Option<u32>,
-        /// Expected SHA-256 hex digest; verified on download
-        #[arg(long)]
-        sha256: Option<String>,
-    },
+    /// URL or search query (when an explicit type keyword is given as first argument)
+    #[arg(value_name = "INPUT")]
+    input: Option<String>,
 
-    /// Add a Godot Asset Library dependency
-    ///
-    /// Searches the asset library for the given name or resolves the given
-    /// numeric asset ID directly.  The Godot version from ggg.toml is used
-    /// to filter search results.
-    ///
-    /// Examples:
-    ///   ggg add asset gut
-    ///   ggg add asset --id 54
-    Asset {
-        /// Asset name to search for, or numeric asset ID
-        query: Option<String>,
-        /// Use this asset ID directly, skipping the search
-        #[arg(long)]
-        id: Option<u32>,
-        /// Dependency name (overrides the name inferred from the asset title)
-        #[arg(long)]
-        name: Option<String>,
-        /// Accept inferred defaults without prompting
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
+    /// Dependency name (overrides the name inferred from the URL or asset title)
+    #[arg(long)]
+    name: Option<String>,
 
-    /// Add a dependency, auto-detecting type from the URL or search term
-    ///
-    /// Routes to `git` if the input looks like a git remote, `archive` if it
-    /// ends in a recognised archive extension, and `asset` (Godot Asset
-    /// Library search) for anything else.
-    #[command(external_subcommand)]
-    Url(Vec<String>),
+    /// Accept all inferred defaults without prompting
+    #[arg(long, short = 'y')]
+    yes: bool,
+
+    /// Strip N leading path components from archive or asset entries
+    #[arg(long)]
+    strip_components: Option<u32>,
+
+    /// Expected SHA-256 hex digest; verified on download (archive only)
+    #[arg(long, help_heading = "Archive Options")]
+    sha256: Option<String>,
+
+    /// Use this asset ID directly, skipping the search (asset only)
+    #[arg(long, help_heading = "Asset Library Options")]
+    id: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -197,18 +168,16 @@ fn main() -> Result<()> {
         Command::Sync { dry_run, force }   => commands::sync::run(dry_run, force),
         Command::Edit { args }             => commands::edit::run(&args),
         Command::Run { args }              => commands::run::run(&args),
-        Command::Add(add_cmd) => match add_cmd {
-            AddCommand::Git { url, name, yes } =>
-                commands::add::run_git(url.as_deref(), name.as_deref(), yes),
-            AddCommand::Archive { url, name, strip_components, sha256 } =>
-                commands::add::run_archive(url.as_deref(), name.as_deref(), strip_components, sha256.as_deref()),
-            AddCommand::Asset { query, id, name, yes } =>
-                commands::add::run_asset(query.as_deref(), id, name.as_deref(), yes),
-            AddCommand::Url(args) => match args.first().map(String::as_str) {
-                Some(input) => commands::add::run_bare(input, false),
-                None        => commands::add::run_git(None, None, false),
-            },
-        },
+        Command::Add(AddArgs { type_or_input, input, name, yes, strip_components, sha256, id }) => {
+            let name = name.as_deref();
+            match type_or_input.as_deref() {
+                Some("git")        => commands::add::run_git(input.as_deref(), name, yes),
+                Some("archive")    => commands::add::run_archive(input.as_deref(), name, strip_components, sha256.as_deref()),
+                Some("asset")      => commands::add::run_asset(input.as_deref(), id, name, yes),
+                Some(url_or_query) => commands::add::run_bare(url_or_query, name, yes),
+                None               => bail!("specify a type (git, archive, asset) or provide a URL/query"),
+            }
+        }
         Command::Deps                      => commands::deps::run(),
         Command::Remove { name }           => commands::remove::run(&name),
         Command::Diff { file }             => commands::diff::run(file.as_deref()),
