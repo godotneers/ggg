@@ -165,8 +165,6 @@ asset_id = 1216
 
 Use [`ggg add asset`](@/docs/reference/commands/add.md) or [`ggg search`](@/docs/reference/commands/search.md) to look up asset IDs without visiting the website manually.
 
-Asset library dependencies default to `strip_components = 1` because the asset library always packages assets inside a top-level folder. Override this in `ggg.toml` if needed.
-
 Use [`ggg update`](@/docs/reference/commands/update.md) to check for and apply newer versions of asset library dependencies.
 
 ---
@@ -195,7 +193,10 @@ Strongly recommended: it catches accidental or malicious changes to the archive 
 
 #### `strip_components`
 
-**Archive deps only. Optional.** Number of leading path components to remove from archive entries before installing, equivalent to `tar --strip-components`. Defaults to `0`.
+**Archive and asset library deps only. Optional.** Number of leading path components to remove from archive entries before installing, equivalent to `tar --strip-components`.
+
+- Archive deps default to `0`.
+- Asset library deps default to `1`, because the asset library always packages assets inside a top-level folder named after the asset.
 
 ```toml
 strip_components = 1
@@ -242,6 +243,39 @@ Trailing slashes on directory paths are optional and have no effect.
 
 ---
 
+#### `exclude`
+
+**Optional.** A list of patterns matched against destination paths. Any file whose destination path matches one of these patterns is skipped during installation.
+
+```toml
+exclude = ["addons/gut/examples", "addons/gut/test"]
+```
+
+Patterns are evaluated after `map` has been applied, so they refer to destination paths (the paths files would land at in your project), not source paths. This means if you use `to` in a `map` entry to rename a directory, your `exclude` patterns should use the renamed path.
+
+**A bare directory path excludes the entire subtree beneath it.** Writing `"addons/gut/examples"` excludes every file under `addons/gut/examples/`, the same way a `map` `from` entry includes everything under a directory. You do not need to append `/**`.
+
+Glob wildcards are also supported for more expressive patterns: `*` matches within a path segment, `**` matches across segments, and `?` matches a single character.
+
+```toml
+exclude = ["addons/gut/examples"]          # bare directory - excludes the whole subtree
+exclude = ["addons/gut/examples/**"]       # equivalent explicit glob
+exclude = ["**/*.test.gd"]                 # glob - exclude all test scripts anywhere
+```
+
+`exclude` is most useful when you want to drop one or a few files or subdirectories from an otherwise complete install, and adding individual `map` entries for every path you want to keep would be tedious.
+
+```toml
+[[dependency]]
+name    = "gut"
+git     = "https://github.com/bitwes/Gut.git"
+rev     = "v9.3.0"
+map     = [{ from = "addons/gut" }]
+exclude = ["addons/gut/examples"]
+```
+
+---
+
 ## Full example
 
 ```toml
@@ -252,12 +286,13 @@ godot = "4.3-stable"
 # Godot rewrites these files on every project open; skip conflict detection for them
 force_overwrite = ["**/*.import", "**/*.uid"]
 
-# Git dep - single mapping, destination equals source so `to` is omitted
+# Git dep - single mapping, exclude the bundled examples
 [[dependency]]
-name = "gut"
-git  = "https://github.com/bitwes/Gut.git"
-rev  = "v9.3.0"
-map  = [{ from = "addons/gut" }]
+name    = "gut"
+git     = "https://github.com/bitwes/Gut.git"
+rev     = "v9.3.0"
+map     = [{ from = "addons/gut" }]
+exclude = ["addons/gut/examples"]
 
 # Git dep - multiple mappings: install the addon and also grab the examples
 [[dependency]]

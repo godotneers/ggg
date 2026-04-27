@@ -311,8 +311,29 @@ fn collect_file_pairs(
         .filter_map(|(abs, rel)| Some((abs, strip_rel_path(&rel, n_strip)?)))
         .collect();
 
+    let exclude_set = match &dep.dep.exclude {
+        Some(patterns) => Some(build_exclude_set(patterns, &dep.dep.name)?),
+        None => None,
+    };
+    // Check the destination path itself and every ancestor so that a bare
+    // directory name like "examples" excludes all files inside it, matching
+    // the same prefix semantics as `map` entries.
+    let excluded = |dest: &Path| -> bool {
+        let Some(ref s) = exclude_set else { return false };
+        let mut current = dest;
+        loop {
+            if s.is_match(path_key(current)) {
+                return true;
+            }
+            match current.parent() {
+                Some(p) if p != Path::new("") => current = p,
+                _ => return false,
+            }
+        }
+    };
+
     match &dep.dep.map {
-        None => Ok(stripped),
+        None => Ok(stripped.into_iter().filter(|(_, dest)| !excluded(dest)).collect()),
         Some(map_entries) => {
             let mut pairs = Vec::new();
             for entry in map_entries {
@@ -322,10 +343,15 @@ fn collect_file_pairs(
                 for (abs, virtual_rel) in &stripped {
                     if virtual_rel == from {
                         matched = true;
-                        pairs.push((abs.clone(), to.to_path_buf()));
+                        if !excluded(to) {
+                            pairs.push((abs.clone(), to.to_path_buf()));
+                        }
                     } else if let Ok(rest) = virtual_rel.strip_prefix(from) {
                         matched = true;
-                        pairs.push((abs.clone(), to.join(rest)));
+                        let dest = to.join(rest);
+                        if !excluded(&dest) {
+                            pairs.push((abs.clone(), dest));
+                        }
                     }
                 }
                 if !matched {
@@ -500,6 +526,17 @@ fn build_overwrite_set(patterns: &[String]) -> Result<GlobSet> {
         );
     }
     builder.build().context("failed to build force_overwrite glob set")
+}
+
+fn build_exclude_set(patterns: &[String], dep_name: &str) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for p in patterns {
+        builder.add(
+            Glob::new(p)
+                .with_context(|| format!("dependency {:?}: invalid exclude pattern: {:?}", dep_name, p))?,
+        );
+    }
+    builder.build().with_context(|| format!("dependency {:?}: failed to build exclude glob set", dep_name))
 }
 
 fn hash_file(path: &Path) -> Result<String> {
@@ -701,6 +738,85 @@ mod tests {
             cache.path(), project.path(),
             &LocalState::default(), false, &[],
         );
+
+        assert!(result.is_err());
+    }
+
+    // --- exclude ------------------------------------------------------------
+
+    fn make_dep_with_exclude(name: &str, map: Option<Vec<MapEntry>>, exclude: Vec<String>) -> ResolvedDependency {
+        let mut dep = make_dep(name, map);
+        dep.dep.exclude = Some(exclude);
+        dep
+    }
+
+    #[test]
+    fn exclude_bare_directory_removes_subtree_without_map() {
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "addons/gut/gut.gd",        b"# gut");
+        write(cache.path(), "addons/gut/examples/e.gd", b"# example");
+
+        let dep = make_dep_with_exclude("gut", None, vec!["addons/gut/examples".into()]);
+        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+
+        assert_eq!(entry.files.len(), 1);
+        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(!exists(project.path(), "addons/gut/examples/e.gd"));
+    }
+
+    #[test]
+    fn exclude_glob_pattern_removes_matching_files_without_map() {
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "addons/gut/gut.gd",        b"# gut");
+        write(cache.path(), "addons/gut/examples/e.gd", b"# example");
+
+        let dep = make_dep_with_exclude("gut", None, vec!["addons/gut/examples/**".into()]);
+        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+
+        assert_eq!(entry.files.len(), 1);
+        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(!exists(project.path(), "addons/gut/examples/e.gd"));
+    }
+
+    #[test]
+    fn exclude_bare_directory_removes_subtree_with_map() {
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "addons/gut/gut.gd",        b"# gut");
+        write(cache.path(), "addons/gut/examples/e.gd", b"# example");
+
+        let map = vec![MapEntry { from: "addons/gut".to_string(), to: None }];
+        let dep = make_dep_with_exclude("gut", Some(map), vec!["addons/gut/examples".into()]);
+        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+
+        assert_eq!(entry.files.len(), 1);
+        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(!exists(project.path(), "addons/gut/examples/e.gd"));
+    }
+
+    #[test]
+    fn exclude_non_matching_pattern_keeps_all_files() {
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "addons/gut/gut.gd", b"# gut");
+
+        let dep = make_dep_with_exclude("gut", None, vec!["addons/other/**".into()]);
+        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+
+        assert_eq!(entry.files.len(), 1);
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
+    }
+
+    #[test]
+    fn exclude_invalid_pattern_returns_error() {
+        let cache   = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write(cache.path(), "plugin.gd", b"# plugin");
+
+        let dep = make_dep_with_exclude("dep", None, vec!["[invalid".into()]);
+        let result = plan_install(&dep, cache.path(), project.path(), &LocalState::default(), false, &[]);
 
         assert!(result.is_err());
     }

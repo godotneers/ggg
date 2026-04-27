@@ -124,6 +124,12 @@ pub struct Dependency {
     /// See [`MapEntry`] for the per-entry semantics.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map: Option<Vec<MapEntry>>,
+
+    /// Glob patterns matched against destination paths to exclude from
+    /// installation. Applied after `map`, so patterns refer to the
+    /// post-mapping destination paths (e.g. `addons/gut/examples/**`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
 }
 
 /// The source kind of a [`Dependency`], obtained via [`Dependency::kind`].
@@ -191,6 +197,7 @@ impl Dependency {
             strip_components: None,
             asset_id: None,
             map: None,
+            exclude: None,
         }
     }
 
@@ -205,6 +212,7 @@ impl Dependency {
             strip_components: None,
             asset_id: None,
             map: None,
+            exclude: None,
         }
     }
 
@@ -219,6 +227,7 @@ impl Dependency {
             strip_components: None,
             asset_id: Some(asset_id),
             map: None,
+            exclude: None,
         }
     }
 
@@ -808,6 +817,43 @@ mod tests {
 
         let output = serialize(&config);
         assert!(!output.contains("map"));
+    }
+
+    #[test]
+    fn parse_dependency_with_exclude() {
+        let config = parse(
+            r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name    = "gut"
+            git     = "https://github.com/bitwes/Gut.git"
+            rev     = "v9.3.0"
+            exclude = ["addons/gut/examples/**", "**/*.test.gd"]
+        "#,
+        );
+        let exc = config.dependency[0].exclude.as_ref().unwrap();
+        assert_eq!(exc.len(), 2);
+        assert_eq!(exc[0], "addons/gut/examples/**");
+        assert_eq!(exc[1], "**/*.test.gd");
+    }
+
+    #[test]
+    fn absent_exclude_is_not_serialized() {
+        let config = parse(
+            r#"
+            [project]
+            godot = "4.3-stable"
+
+            [[dependency]]
+            name = "gut"
+            git  = "https://github.com/bitwes/Gut.git"
+            rev  = "v9.3.0"
+        "#,
+        );
+        let output = serialize(&config);
+        assert!(!output.contains("exclude"));
     }
 
     #[test]
