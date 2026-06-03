@@ -18,7 +18,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Create a ggg.toml in the current directory
-    Init,
+    Init {
+        /// Download and install export templates alongside the Godot version
+        #[arg(long)]
+        with_export_templates: bool,
+    },
 
     /// Resolve and install all dependencies, download Godot if needed
     Sync {
@@ -28,13 +32,19 @@ enum Command {
         /// Overwrite files even if they are not under ggg's control
         #[arg(long)]
         force: bool,
+        /// Download and install export templates alongside the Godot version
+        #[arg(long)]
+        with_export_templates: bool,
     },
 
     /// Open the project in the pinned Godot editor
     ///
     /// All arguments after `edit` are forwarded verbatim to Godot.
-    /// ggg-level flags (e.g. --no-download) must come before the subcommand.
+    /// ggg-level flags must come before the subcommand.
     Edit {
+        /// Download and install export templates alongside the Godot version
+        #[arg(long)]
+        with_export_templates: bool,
         /// Arguments forwarded verbatim to the Godot editor
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -43,8 +53,11 @@ enum Command {
     /// Run Godot against the project
     ///
     /// All arguments after `run` are forwarded verbatim to Godot.
-    /// ggg-level flags (e.g. --no-download) must come before the subcommand.
+    /// ggg-level flags must come before the subcommand.
     Run {
+        /// Download and install export templates alongside the Godot version
+        #[arg(long)]
+        with_export_templates: bool,
         /// Arguments forwarded verbatim to Godot
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -164,10 +177,14 @@ struct AddArgs {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init                      => commands::init::run(),
-        Command::Sync { dry_run, force }   => commands::sync::run(dry_run, force),
-        Command::Edit { args }             => commands::edit::run(&args),
-        Command::Run { args }              => commands::run::run(&args),
+        Command::Init { with_export_templates } =>
+            commands::init::run(with_export_templates),
+        Command::Sync { dry_run, force, with_export_templates } =>
+            commands::sync::run(dry_run, force, with_export_templates),
+        Command::Edit { with_export_templates, args } =>
+            commands::edit::run(&args, with_export_templates),
+        Command::Run { with_export_templates, args } =>
+            commands::run::run(&args, with_export_templates),
         Command::Add(AddArgs { type_or_input, input, name, yes, strip_components, sha256, id }) => {
             let name = name.as_deref();
             match type_or_input.as_deref() {

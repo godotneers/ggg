@@ -14,11 +14,12 @@ use indicatif::ProgressBar;
 
 use crate::config::{Config, Project};
 use crate::dependency::state::STATE_FILE;
+use crate::godot::export_templates;
 use crate::godot::manifest::fetch_versions;
 use crate::godot::project::read_project_info;
 use crate::godot::release::GodotRelease;
 
-pub fn run() -> Result<()> {
+pub fn run(with_export_templates: bool) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
     let project_godot = Path::new("project.godot");
 
@@ -74,9 +75,24 @@ pub fn run() -> Result<()> {
             .interact()?,
     };
 
+    let manage_templates = if with_export_templates {
+        true
+    } else {
+        Confirm::with_theme(&theme)
+            .with_prompt(
+                "Manage export templates? (download and install alongside the Godot version)",
+            )
+            .default(false)
+            .interact()?
+    };
+
     let release = GodotRelease { version: chosen.version.clone(), flavor: chosen.flavor.clone(), mono };
 
-    let config = Config { project: Project { godot: release }, sync: None, dependency: vec![] };
+    let config = Config {
+        project: Project { godot: release, export_templates: manage_templates },
+        sync: None,
+        dependency: vec![],
+    };
     config.save(ggg_toml)?;
     ensure_gitignore_entry(Path::new(".gitignore"), STATE_FILE)?;
 
@@ -85,6 +101,10 @@ pub fn run() -> Result<()> {
     if !project_godot.exists() {
         create_project_godot(project_godot, chosen)?;
         println!("Created project.godot");
+    }
+
+    if manage_templates {
+        export_templates::ensure_export_templates(&config.project.godot)?;
     }
 
     Ok(())

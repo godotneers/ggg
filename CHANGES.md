@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-03
+
+### Added
+- Export template support. GGG can now download and install Godot export templates alongside the engine binary. Templates are cached in GGG's shared cache and installed into Godot's standard data directory so the editor finds them automatically.
+  - `ggg init` prompts whether to manage export templates during setup. Answering yes downloads and installs them immediately and records `export_templates = true` in `ggg.toml` so subsequent syncs keep them up to date.
+  - `ggg sync`, `ggg edit`, and `ggg run` all accept a `--with-export-templates` flag to download and install templates for a single invocation without modifying `ggg.toml`. This is useful when only certain machines (e.g. a release build server) need export templates.
+  - The `export_templates` field in `ggg.toml` under `[project]` enables automatic template management on every sync.
+
 ## [0.3.1] - 2026-04-27
 
 ### Fixed
@@ -33,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial release.
 
-[Unreleased]: https://github.com/godotneers/ggg/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/godotneers/ggg/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/godotneers/ggg/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/godotneers/ggg/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/godotneers/ggg/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/godotneers/ggg/compare/v0.1.0...v0.2.0

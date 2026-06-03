@@ -4,7 +4,7 @@ weight = 5
 +++
 
 ```
-ggg edit [<godot-args>...]
+ggg edit [--with-export-templates] [<godot-args>...]
 ```
 
 Opens the current project in the Godot editor using the version declared in `ggg.toml`. If that version is not yet cached, it is downloaded first.
@@ -19,12 +19,19 @@ ggg edit
 
 Run this from your project directory. Godot opens with the current project loaded. When you close the editor, the terminal prompt returns.
 
-Any arguments you add after `ggg edit` are forwarded verbatim to Godot:
+ggg flags must come before any Godot arguments. Any arguments after the ggg flags are forwarded verbatim to Godot:
 
 ```bash
 ggg edit --verbose
 ggg edit --rendering-method gl_compatibility
+ggg edit --with-export-templates --verbose
 ```
+
+## Flags
+
+**`--with-export-templates`:** download and install export templates for the declared Godot version before opening the editor, regardless of the `export_templates` setting in `ggg.toml`. Does not modify `ggg.toml`.
+
+If `export_templates = true` is set in `ggg.toml`, templates are always ensured without needing this flag.
 
 ## Notes
 

@@ -26,11 +26,12 @@ use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{LocalState, STATE_FILE};
 use crate::godot::cache::GodotCache;
 use crate::godot::engine;
+use crate::godot::export_templates;
 use crate::dependency::sync::{self, CleanupPlan, DepWork};
 
 use super::init::ensure_gitignore_entry;
 
-pub fn run(dry_run: bool, force: bool) -> Result<()> {
+pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()> {
     let project_root = std::env::current_dir()
         .context("failed to determine current directory")?;
 
@@ -41,6 +42,10 @@ pub fn run(dry_run: bool, force: bool) -> Result<()> {
 
     let godot_cache = GodotCache::from_env()?;
     engine::ensure(&config.project.godot, &godot_cache)?;
+
+    if with_export_templates || config.project.export_templates {
+        export_templates::ensure_export_templates(&config.project.godot)?;
+    }
 
     let dep_cache = DependencyCache::from_env()?;
 

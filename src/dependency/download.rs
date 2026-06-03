@@ -156,7 +156,7 @@ fn download_archive(
 }
 
 /// Stream `url` to a named temp file, compute SHA-256, return `(sha256_hex, path)`.
-fn download_to_temp(url: &str, name: &str) -> Result<(String, PathBuf)> {
+pub(crate) fn download_to_temp(url: &str, name: &str) -> Result<(String, PathBuf)> {
     let tmp = tempfile::NamedTempFile::new()
         .context("failed to create temporary file for archive download")?;
 

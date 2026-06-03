@@ -33,7 +33,7 @@ mod tests {
 
     fn write_config(path: &Path, deps: &[(&str, &str, &str)]) {
         let config = Config {
-            project: Project { godot: "4.3-stable".parse().unwrap() },
+            project: Project { godot: "4.3-stable".parse().unwrap(), export_templates: false },
             sync: None,
             dependency: deps.iter().map(|(name, git, rev)| {
                 Dependency::new_git(*name, *git, *rev)

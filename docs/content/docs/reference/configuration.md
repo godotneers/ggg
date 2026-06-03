@@ -35,6 +35,24 @@ godot = "4.4-rc2"           # release candidate
 
 ---
 
+#### `export_templates`
+
+**Optional. Default: `false`.** When `true`, `ggg sync`, `ggg edit`, and `ggg run` will also download and install export templates for the declared Godot version, in addition to the engine binary.
+
+```toml
+[project]
+godot = "4.3-stable"
+export_templates = true
+```
+
+Export templates are required to publish a game. They are installed into Godot's standard data directory so the editor finds them automatically; no manual configuration is needed.
+
+This field is set by [`ggg init`](@/docs/reference/commands/init.md) when you opt in during the setup prompt. You can also set it by hand after the fact. Once set, every subsequent `ggg sync` keeps the templates up to date alongside the engine binary.
+
+If you only need templates on specific machines (for example, only on the machine that builds releases), leave this `false` in `ggg.toml` and pass `--with-export-templates` on the command line when needed instead. That flag works on `ggg sync`, `ggg edit`, and `ggg run` without modifying the config file.
+
+---
+
 ## `[sync]`
 
 Optional table that controls sync behaviour. Can be omitted entirely when the defaults are acceptable.
@@ -281,6 +299,7 @@ exclude = ["addons/gut/examples"]
 ```toml
 [project]
 godot = "4.3-stable"
+export_templates = true   # download and install export templates alongside the engine
 
 [sync]
 # Godot rewrites these files on every project open; skip conflict detection for them

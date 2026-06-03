@@ -1,6 +1,6 @@
 [package]
 name = "ggg"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/godotneers/ggg"
@@ -11,7 +11,7 @@ clap = { version = "4", features = ["derive"] }
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 dirs = "6"
 indicatif = "0.17"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0.12"
 toml_edit = { version = "0.22", features = ["serde"] }
@@ -19,7 +19,7 @@ tempfile = "3"
 zip = "2"
 tar = "0.4"
 flate2 = "1"
-gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "blocking-http-transport-reqwest-native-tls", "blocking-network-client", "attributes"] }
+gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "blocking-http-transport-reqwest-rust-tls", "blocking-network-client", "attributes"] }
 sha2 = "0.10"
 diffy = "0.3"
 globset = "0.4"

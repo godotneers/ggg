@@ -60,6 +60,10 @@ pub struct Sync {
     pub force_overwrite: Vec<String>,
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 /// The `[project]` table.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Project {
@@ -68,6 +72,13 @@ pub struct Project {
     /// `ggg sync` downloads this binary if it is not already cached.
     /// `ggg edit` and `ggg run` invoke it.
     pub godot: GodotRelease,
+
+    /// Whether to download and install export templates alongside the Godot binary.
+    ///
+    /// Set to `true` during `ggg init` when the user opts in, or by passing
+    /// `--with-export-templates` to any command that supports it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub export_templates: bool,
 }
 
 /// One `[[dependency]]` entry - a single addon sourced from a git repository
@@ -888,6 +899,7 @@ mod tests {
         let original = Config {
             project: Project {
                 godot: "4.3-stable".parse().unwrap(),
+                export_templates: false,
             },
             sync: None,
             dependency: vec![{
@@ -929,6 +941,7 @@ mod tests {
         let invalid = Config {
             project: Project {
                 godot: "4.3-stable".parse().unwrap(),
+                export_templates: false,
             },
             sync: None,
             dependency: vec![

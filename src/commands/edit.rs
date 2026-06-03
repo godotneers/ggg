@@ -9,11 +9,16 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::godot::cache::GodotCache;
 use crate::godot::engine;
+use crate::godot::export_templates;
 
-pub fn run(extra_args: &[String]) -> Result<()> {
+pub fn run(extra_args: &[String], with_export_templates: bool) -> Result<()> {
     let config = Config::load(std::path::Path::new("ggg.toml"))?;
     let cache = GodotCache::from_env()?;
     let executable = engine::ensure(&config.project.godot, &cache)?;
+
+    if with_export_templates || config.project.export_templates {
+        export_templates::ensure_export_templates(&config.project.godot)?;
+    }
 
     let mut args = vec!["--editor".to_string(), ".".to_string()];
     args.extend_from_slice(extra_args);

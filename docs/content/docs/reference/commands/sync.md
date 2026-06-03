@@ -4,7 +4,7 @@ weight = 4
 +++
 
 ```
-ggg sync [--dry-run] [--force]
+ggg sync [--dry-run] [--force] [--with-export-templates]
 ```
 
 Downloads the Godot version declared in `ggg.toml` (if not already cached), resolves and installs all dependencies, and removes files left behind by dependencies that have been deleted or remapped. Run this after any change to `ggg.toml`.
@@ -21,6 +21,8 @@ Downloads the Godot version declared in `ggg.toml` (if not already cached), reso
 `ggg sync` works in two phases. It first computes everything that would change without touching any files, then carries out all changes at once. If anything causes a conflict, the whole sync is aborted before any files are written.
 
 **Godot:** downloads and caches the Godot binary declared in `[project]` if it is not already present. Does nothing if the version is already cached.
+
+**Export templates:** if `export_templates = true` is set in `ggg.toml`, or if `--with-export-templates` is passed, downloads and installs the export templates for the declared Godot version. Skipped if the templates are already installed. This happens before dependency installation so that a failed template download does not leave dependencies in a partial state.
 
 **Dependencies:** for each dependency in `ggg.toml`:
 - Resolves the revision to a pinned commit SHA (git deps), verifies the archive hash (archive deps), or fetches the current download URL from the Godot Asset Library (asset deps). The lock file is used to skip this step when nothing has changed.
@@ -63,6 +65,8 @@ Use [`ggg diff`](@/docs/reference/commands/diff.md) to review what has changed b
 **`--dry-run`:** computes and prints the full plan without writing any files. Useful for previewing what a sync would change. Exits cleanly even if there are conflicts.
 
 **`--force`:** overwrites all conflicting files without prompting, discarding any local changes. Use this when you are sure the conflicts do not matter.
+
+**`--with-export-templates`:** download and install export templates for the declared Godot version, regardless of the `export_templates` setting in `ggg.toml`. Does not modify `ggg.toml`. Use this when you need templates on a specific machine without committing that preference to the project config.
 
 ## Automatically overwriting engine-managed files
 
