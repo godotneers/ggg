@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, DepKind};
 use crate::dependency::lockfile::LockFile;
@@ -32,7 +32,9 @@ pub fn run(name: Option<&str>, dry_run: bool) -> Result<()> {
         }
         vec![dep]
     } else {
-        config.dependency.iter()
+        config
+            .dependency
+            .iter()
             .filter(|d| matches!(d.kind(), DepKind::AssetLib { .. }))
             .collect()
     };
@@ -45,7 +47,9 @@ pub fn run(name: Option<&str>, dry_run: bool) -> Result<()> {
     let mut any_updated = false;
 
     for dep in &deps_to_check {
-        let DepKind::AssetLib { asset_id } = dep.kind() else { unreachable!() };
+        let DepKind::AssetLib { asset_id } = dep.kind() else {
+            unreachable!()
+        };
 
         let locked_version = lock
             .locked_asset_lib(&dep.name, asset_id)
@@ -60,11 +64,12 @@ pub fn run(name: Option<&str>, dry_run: bool) -> Result<()> {
         }
         let locked_version = locked_version.unwrap();
 
-        let detail = asset_lib::get_asset(asset_id)
-            .with_context(|| format!(
+        let detail = asset_lib::get_asset(asset_id).with_context(|| {
+            format!(
                 "failed to fetch asset {:?} (id={asset_id}) from the Godot Asset Library",
                 dep.name,
-            ))?;
+            )
+        })?;
 
         if detail.version <= locked_version {
             println!("{}: up to date (v{}).", dep.name, detail.version_string);

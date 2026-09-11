@@ -14,14 +14,13 @@ use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::dependency::cache::DependencyCache;
-use crate::dependency::sync::cache_file_map;
 use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{LocalState, STATE_FILE};
+use crate::dependency::sync::cache_file_map;
 use crate::dependency::sync::{self, SyncPlan};
 
 pub fn run(file: Option<&str>) -> Result<()> {
-    let project_root = std::env::current_dir()
-        .context("failed to determine current directory")?;
+    let project_root = std::env::current_dir().context("failed to determine current directory")?;
 
     let config = Config::load(Path::new("ggg.toml"))?;
     let lock = LockFile::load_or_empty(Path::new("ggg.lock"))?;
@@ -33,11 +32,18 @@ pub fn run(file: Option<&str>) -> Result<()> {
     // keys stored in LocalState regardless of what the user typed.
     let filter: Option<String> = file.map(|f| f.replace('\\', "/"));
 
-    let SyncPlan { works, .. } =
-        sync::plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, false)?;
+    let SyncPlan { works, .. } = sync::plan(
+        &config,
+        &lock,
+        &old_state,
+        state_present,
+        &dep_cache,
+        &project_root,
+        false,
+    )?;
 
     let use_color = std::io::stdout().is_terminal()
-        && std::env::var_os("NO_COLOR").is_none();
+        && std::env::var_os(crate::envvars::NO_COLOR_ENV_VAR).is_none();
 
     let fmt = if use_color {
         diffy::PatchFormatter::new().with_color()
@@ -54,7 +60,7 @@ pub fn run(file: Option<&str>) -> Result<()> {
             .conflicts
             .modified
             .iter()
-            .filter(|p| filter.as_deref().map_or(true, |f| p.as_str() == f))
+            .filter(|p| filter.as_deref().is_none_or(|f| p.as_str() == f))
             .map(|p| p.as_str())
             .collect();
 
@@ -63,15 +69,17 @@ pub fn run(file: Option<&str>) -> Result<()> {
         }
 
         let cache_dir = dep_cache.entry_path(&work.resolved);
-        let file_map = cache_file_map(&work.resolved, &cache_dir)
-            .with_context(|| {
-                format!("failed to enumerate cache for {:?}", work.resolved.dep.name)
-            })?;
+        let file_map = cache_file_map(&work.resolved, &cache_dir).with_context(|| {
+            format!("failed to enumerate cache for {:?}", work.resolved.dep.name)
+        })?;
 
         if any_printed {
             println!();
         }
-        println!("Diff for {} ({}):", work.resolved.dep.name, &work.resolve_note);
+        println!(
+            "Diff for {} ({}):",
+            work.resolved.dep.name, &work.resolve_note
+        );
 
         for path in modified {
             let Some(cache_path) = file_map.get(path) else {

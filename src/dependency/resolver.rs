@@ -14,14 +14,14 @@
 //! [`resolve_dependency`] is the unified entry point.  [`resolve`] is kept as
 //! a lower-level git-only helper used by the sync re-resolve fallback.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use gix::bstr::ByteSlice;
 use gix::progress::Discard;
 use gix::protocol::handshake::Ref;
 
 use crate::config::{DepKind, Dependency};
-use crate::dependency::lockfile::LockFile;
 use crate::dependency::ResolvedDependency;
+use crate::dependency::lockfile::LockFile;
 
 /// Resolve `dep.rev` to a full commit SHA and return a [`ResolvedDependency`].
 ///
@@ -38,9 +38,13 @@ use crate::dependency::ResolvedDependency;
 /// deleted before the subsequent fetch. The fetch step must handle these
 /// failure cases regardless.
 pub fn resolve(dep: &Dependency) -> Result<ResolvedDependency> {
-    let git = dep.git.as_deref()
+    let git = dep
+        .git
+        .as_deref()
         .expect("resolver::resolve() called on non-git dependency; check dep type first");
-    let rev = dep.rev.as_deref()
+    let rev = dep
+        .rev
+        .as_deref()
         .expect("resolver::resolve() called on dep without rev; validate() not called");
 
     let sha = if looks_like_sha(rev) {
@@ -49,7 +53,12 @@ pub fn resolve(dep: &Dependency) -> Result<ResolvedDependency> {
         resolve_remote(git, rev)
             .with_context(|| format!("failed to resolve dependency {:?}", dep.name))?
     };
-    Ok(ResolvedDependency { dep: dep.clone(), sha, resolved_url: None, asset_version: None })
+    Ok(ResolvedDependency {
+        dep: dep.clone(),
+        sha,
+        resolved_url: None,
+        asset_version: None,
+    })
 }
 
 /// Resolve `dep` against `lock`, returning a [`ResolvedDependency`] that
@@ -116,12 +125,9 @@ pub fn resolve_dependency(
                     .url
                     .as_deref()
                     .with_context(|| format!("lock entry for {:?} missing url", dep.name))?;
-                let archive_sha = entry
-                    .archive_sha
-                    .as_deref()
-                    .with_context(|| {
-                        format!("lock entry for {:?} missing archive_sha", dep.name)
-                    })?;
+                let archive_sha = entry.archive_sha.as_deref().with_context(|| {
+                    format!("lock entry for {:?} missing archive_sha", dep.name)
+                })?;
                 let version_label = entry
                     .asset_version
                     .map(|v| format!(" (version {})", v))
@@ -170,23 +176,27 @@ fn looks_like_sha(s: &str) -> bool {
 
 /// Query the remote for its refs and resolve `rev` to a commit SHA.
 fn resolve_remote(url: &str, rev: &str) -> Result<String> {
-    let refs = list_remote_refs(url)
-        .with_context(|| format!("failed to list refs from {url:?}"))?;
+    let refs =
+        list_remote_refs(url).with_context(|| format!("failed to list refs from {url:?}"))?;
 
     // Try candidates in priority order:
     // 1. Annotated tag (Peeled) - most specific, `object` is the commit
     // 2. Direct ref matching refs/tags/<rev>  (lightweight tag)
     // 3. Direct ref matching refs/heads/<rev> (branch)
     // 4. Any Direct ref whose name exactly matches rev (e.g. "HEAD")
-    let tag_ref  = format!("refs/tags/{rev}");
+    let tag_ref = format!("refs/tags/{rev}");
     let head_ref = format!("refs/heads/{rev}");
 
     // Annotated tag: server sends a Peeled entry; `object` is the commit SHA.
     for r in &refs {
-        if let Ref::Peeled { full_ref_name, object, .. } = r {
-            if full_ref_name.as_bstr() == tag_ref.as_bytes().as_bstr() {
-                return Ok(object.to_hex().to_string());
-            }
+        if let Ref::Peeled {
+            full_ref_name,
+            object,
+            ..
+        } = r
+            && full_ref_name.as_bstr() == tag_ref.as_bytes().as_bstr()
+        {
+            return Ok(object.to_hex().to_string());
         }
     }
 
@@ -205,7 +215,10 @@ fn resolve_remote(url: &str, rev: &str) -> Result<String> {
 /// If `r` is a `Direct` ref whose name matches `name`, return its SHA.
 fn direct_sha(r: &Ref, name: &str) -> Option<String> {
     match r {
-        Ref::Direct { full_ref_name, object } if full_ref_name.as_bstr() == name.as_bytes().as_bstr() => {
+        Ref::Direct {
+            full_ref_name,
+            object,
+        } if full_ref_name.as_bstr() == name.as_bytes().as_bstr() => {
             Some(object.to_hex().to_string())
         }
         _ => None,
@@ -221,8 +234,7 @@ fn list_remote_refs(url: &str) -> Result<Vec<Ref>> {
         .with_context(|| format!("invalid git URL: {url:?}"))?;
 
     let tmp = tempfile::tempdir().context("failed to create temporary directory")?;
-    let repo = gix::init_bare(tmp.path())
-        .context("failed to initialise temporary repository")?;
+    let repo = gix::init_bare(tmp.path()).context("failed to initialise temporary repository")?;
 
     // gix requires a Repository context to open a remote connection - there
     // is no repo-less ls-remote API yet (see GitoxideLabs/gitoxide#930).
@@ -234,10 +246,7 @@ fn list_remote_refs(url: &str) -> Result<Vec<Ref>> {
     let remote = repo
         .remote_at(url_parsed)
         .context("failed to configure remote")?
-        .with_refspecs(
-            ["+refs/*:refs/*"],
-            gix::remote::Direction::Fetch,
-        )
+        .with_refspecs(["+refs/*:refs/*"], gix::remote::Direction::Fetch)
         .context("failed to configure wildcard refspec")?;
 
     let connection = remote
@@ -289,7 +298,10 @@ mod tests {
     fn sha_passthrough_preserves_dep_fields() {
         let sha = "b".repeat(40);
         let mut dep = Dependency::new_git("my-addon", "https://example.com/repo.git", &sha);
-        dep.map = Some(vec![MapEntry { from: "addons/foo".into(), to: None }]);
+        dep.map = Some(vec![MapEntry {
+            from: "addons/foo".into(),
+            to: None,
+        }]);
         let resolved = resolve(&dep).unwrap();
         assert_eq!(resolved.sha, sha);
         assert_eq!(resolved.dep.name, "my-addon");
@@ -307,7 +319,7 @@ mod tests {
 
     #[test]
     fn looks_like_sha_requires_exactly_40_hex() {
-        assert!( looks_like_sha(&"a".repeat(40)));
+        assert!(looks_like_sha(&"a".repeat(40)));
         assert!(!looks_like_sha(&"a".repeat(39)));
         assert!(!looks_like_sha(&"a".repeat(41)));
         assert!(!looks_like_sha("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));

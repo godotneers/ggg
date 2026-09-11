@@ -18,7 +18,13 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 
-const API_BASE: &str = "https://godotengine.org/asset-library/api";
+/// The Asset Library API base URL, overridable via the `GGG_ASSET_LIB_API_URL`
+/// environment variable ([`crate::envvars::ASSET_LIB_API_URL_ENV_VAR`]) so
+/// tests can point at a local server.
+pub fn asset_lib_api_url() -> String {
+    std::env::var(crate::envvars::ASSET_LIB_API_URL_ENV_VAR)
+        .unwrap_or_else(|_| "https://godotengine.org/asset-library/api".to_string())
+}
 
 // ---------------------------------------------------------------------------
 // Wire format helpers
@@ -96,14 +102,12 @@ struct SearchResponse {
 /// `results.len()` when there are multiple pages.
 pub fn search(query: &str, godot_version: &str) -> Result<(Vec<AssetSearchResult>, u32)> {
     let client = build_client()?;
-    let url = format!("{API_BASE}/asset");
-    let mut req = client
-        .get(&url)
-        .query(&[
-            ("filter", query),
-            ("support", "official+community"),
-            ("sort", "updated"),
-        ]);
+    let url = format!("{}/asset", asset_lib_api_url());
+    let mut req = client.get(&url).query(&[
+        ("filter", query),
+        ("support", "official+community"),
+        ("sort", "updated"),
+    ]);
     if !godot_version.is_empty() {
         req = req.query(&[("godot_version", godot_version)]);
     }
@@ -121,7 +125,7 @@ pub fn search(query: &str, godot_version: &str) -> Result<(Vec<AssetSearchResult
 /// Fetch full details for the asset with the given `id`.
 pub fn get_asset(id: u32) -> Result<AssetDetail> {
     let client = build_client()?;
-    let url = format!("{API_BASE}/asset/{id}");
+    let url = format!("{}/asset/{id}", asset_lib_api_url());
     client
         .get(&url)
         .send()
@@ -140,4 +144,33 @@ fn build_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .build()
         .context("failed to build HTTP client")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn asset_lib_api_url_override_wins() {
+        unsafe {
+            std::env::set_var(
+                crate::envvars::ASSET_LIB_API_URL_ENV_VAR,
+                "http://localhost:8080/api",
+            )
+        };
+        assert_eq!(asset_lib_api_url(), "http://localhost:8080/api");
+        unsafe { std::env::remove_var(crate::envvars::ASSET_LIB_API_URL_ENV_VAR) };
+    }
+
+    #[test]
+    #[serial]
+    fn asset_lib_api_url_default_when_unset() {
+        unsafe { std::env::remove_var(crate::envvars::ASSET_LIB_API_URL_ENV_VAR) };
+        assert_eq!(
+            asset_lib_api_url(),
+            "https://godotengine.org/asset-library/api"
+        );
+    }
 }

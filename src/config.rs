@@ -244,10 +244,14 @@ impl Dependency {
 
     /// Validate the source fields of this single dependency entry.
     fn validate_source(&self) -> Result<()> {
-        let source_count = [self.git.is_some(), self.url.is_some(), self.asset_id.is_some()]
-            .iter()
-            .filter(|&&b| b)
-            .count();
+        let source_count = [
+            self.git.is_some(),
+            self.url.is_some(),
+            self.asset_id.is_some(),
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count();
 
         if source_count > 1 {
             anyhow::bail!(
@@ -495,7 +499,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
         "#,
         );
@@ -517,7 +521,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
             map  = [{ from = "addons/gut" }]
         "#,
@@ -538,7 +542,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
             map  = [
                 { from = "addons/gut" },
@@ -562,12 +566,12 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
 
             [[dependency]]
             name = "phantom-camera"
-            git  = "https://github.com/ramokz/phantom-camera.git"
+            git  = "https://example.com/phantom-camera.git"
             rev  = "v0.8"
         "#,
         );
@@ -628,7 +632,7 @@ mod tests {
             godot = "4.3-stable"
 
             [[dependency]]
-            git = "https://github.com/bitwes/Gut.git"
+            git = "https://example.com/gut.git"
             rev = "v9.3.0"
         "#,
         );
@@ -664,7 +668,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
         "#,
         );
         let err = config.validate().unwrap_err().to_string();
@@ -680,7 +684,7 @@ mod tests {
 
             [[dependency]]
             name   = "gut"
-            git    = "https://github.com/bitwes/Gut.git"
+            git    = "https://example.com/gut.git"
             rev    = "main"
             sha256 = "abc"
         "#,
@@ -749,7 +753,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
             map  = [{ to = "addons/gut" }]
         "#,
@@ -773,12 +777,12 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.1"
         "#,
         );
@@ -795,12 +799,12 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
 
             [[dependency]]
             name = "phantom-camera"
-            git  = "https://github.com/ramokz/phantom-camera.git"
+            git  = "https://example.com/phantom-camera.git"
             rev  = "v0.8"
         "#,
         );
@@ -821,7 +825,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
         "#,
         );
@@ -839,7 +843,7 @@ mod tests {
 
             [[dependency]]
             name    = "gut"
-            git     = "https://github.com/bitwes/Gut.git"
+            git     = "https://example.com/gut.git"
             rev     = "v9.3.0"
             exclude = ["addons/gut/examples/**", "**/*.test.gd"]
         "#,
@@ -859,7 +863,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
         "#,
         );
@@ -877,7 +881,7 @@ mod tests {
 
             [[dependency]]
             name = "gut"
-            git  = "https://github.com/bitwes/Gut.git"
+            git  = "https://example.com/gut.git"
             rev  = "v9.3.0"
             map  = [{ from = "addons/gut" }]
         "#,
@@ -903,8 +907,7 @@ mod tests {
             },
             sync: None,
             dependency: vec![{
-                let mut d =
-                    Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0");
+                let mut d = Dependency::new_git("gut", "https://example.com/gut.git", "v9.3.0");
                 d.map = Some(vec![MapEntry {
                     from: "addons/gut".into(),
                     to: None,
@@ -945,8 +948,8 @@ mod tests {
             },
             sync: None,
             dependency: vec![
-                Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"),
-                Dependency::new_git("gut", "https://github.com/bitwes/Gut.git", "v9.3.1"),
+                Dependency::new_git("gut", "https://example.com/gut.git", "v9.3.0"),
+                Dependency::new_git("gut", "https://example.com/gut.git", "v9.3.1"),
             ],
         };
 
@@ -970,7 +973,7 @@ mod tests {
         let mut config = Config::load(&path).unwrap();
         config.dependency.push(Dependency::new_git(
             "gut",
-            "https://github.com/bitwes/Gut.git",
+            "https://example.com/gut.git",
             "v9.3.0",
         ));
         config.save(&path).unwrap();
@@ -992,7 +995,7 @@ mod tests {
         let mut config = Config::load(&path).unwrap();
         config.dependency.push(Dependency::new_git(
             "gut",
-            "https://github.com/bitwes/Gut.git",
+            "https://example.com/gut.git",
             "v9.3.0",
         ));
         config.save(&path).unwrap();
@@ -1014,12 +1017,12 @@ godot = "4.3-stable"
 
 [[dependency]]
 name = "gut"
-git  = "https://github.com/bitwes/Gut.git"
+git  = "https://example.com/gut.git"
 rev  = "v9.3.0"
 
 [[dependency]]
 name = "phantom-camera"
-git  = "https://github.com/ramokz/phantom-camera.git"
+git  = "https://example.com/phantom-camera.git"
 rev  = "main"
 "#,
         )

@@ -43,9 +43,20 @@ fn template_url(release: &GodotRelease) -> String {
         "export_templates.tpz"
     };
     format!(
-        "https://downloads.godotengine.org/?version={}&flavor={}&slug={}&platform=templates",
-        release.version, release.flavor, slug
+        "{}/?version={}&flavor={}&slug={}&platform=templates",
+        godot_downloads_base_url(),
+        release.version,
+        release.flavor,
+        slug
     )
+}
+
+/// The Godot downloads base URL (host without trailing path), overridable via
+/// the `GGG_GODOT_DOWNLOADS_BASE_URL` environment variable so tests can point
+/// at a local server.
+fn godot_downloads_base_url() -> String {
+    std::env::var(crate::envvars::GODOT_DOWNLOADS_BASE_URL_ENV_VAR)
+        .unwrap_or_else(|_| "https://downloads.godotengine.org".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +89,10 @@ impl ExportTemplateCache {
     ///
     /// Presence of `templates/version.txt` is the canonical completion marker.
     pub fn contains(&self, release: &GodotRelease) -> bool {
-        self.dir(release).join("templates").join("version.txt").exists()
+        self.dir(release)
+            .join("templates")
+            .join("version.txt")
+            .exists()
     }
 
     /// Extract a downloaded `.tpz` archive into the cache directory.
@@ -90,13 +104,11 @@ impl ExportTemplateCache {
         let dir = self.dir(release);
 
         if dir.exists() {
-            std::fs::remove_dir_all(&dir).with_context(|| {
-                format!("failed to remove existing cache at {}", dir.display())
-            })?;
+            std::fs::remove_dir_all(&dir)
+                .with_context(|| format!("failed to remove existing cache at {}", dir.display()))?;
         }
-        std::fs::create_dir_all(&dir).with_context(|| {
-            format!("failed to create cache directory {}", dir.display())
-        })?;
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create cache directory {}", dir.display()))?;
 
         crate::utils::archive::scan_zip(archive)
             .context("export template archive contains unsafe paths - refusing to extract")?;
@@ -150,8 +162,15 @@ fn godot_templates_subdir(release: &GodotRelease) -> &'static str {
 
 /// Platform-specific base directory where Godot stores its editor data,
 /// joined with the appropriate templates subdirectory.
+///
+/// The base may be overridden via `GGG_GODOT_DATA_DIR`
+/// ([`crate::envvars::GODOT_DATA_DIR_ENV_VAR`]).
 fn godot_templates_dir(release: &GodotRelease) -> Result<PathBuf> {
-    let data = dirs::data_dir().context("could not determine platform data directory")?;
+    let data = if let Ok(dir) = std::env::var(crate::envvars::GODOT_DATA_DIR_ENV_VAR) {
+        PathBuf::from(dir)
+    } else {
+        dirs::data_dir().context("could not determine platform data directory")?
+    };
 
     // Linux uses lowercase "godot"; macOS and Windows use "Godot"
     #[cfg(target_os = "linux")]
@@ -180,8 +199,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     for entry in std::fs::read_dir(src)
         .with_context(|| format!("failed to read directory {}", src.display()))?
     {
-        let entry =
-            entry.with_context(|| format!("failed to read entry in {}", src.display()))?;
+        let entry = entry.with_context(|| format!("failed to read entry in {}", src.display()))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if entry
@@ -202,14 +220,11 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
             // the source readonly flag on Windows, but Godot needs to read
             // these files normally and users may want to inspect them.
             let mut perms = std::fs::metadata(&dst_path)
-                .with_context(|| {
-                    format!("failed to read permissions of {}", dst_path.display())
-                })?
+                .with_context(|| format!("failed to read permissions of {}", dst_path.display()))?
                 .permissions();
-            perms.set_readonly(false);
-            std::fs::set_permissions(&dst_path, perms).with_context(|| {
-                format!("failed to set permissions on {}", dst_path.display())
-            })?;
+            crate::utils::set_writable(&mut perms);
+            std::fs::set_permissions(&dst_path, perms)
+                .with_context(|| format!("failed to set permissions on {}", dst_path.display()))?;
         }
     }
     Ok(())
@@ -234,11 +249,8 @@ pub fn ensure_export_templates(release: &GodotRelease) -> Result<()> {
 
     if !cache.contains(release) {
         let url = template_url(release);
-        let (_sha, tmp_path) =
-            download_to_temp(&url, &format!("export templates {}", release))
-                .with_context(|| {
-                    format!("failed to download export templates for {}", release)
-                })?;
+        let (_sha, tmp_path) = download_to_temp(&url, &format!("export templates {}", release))
+            .with_context(|| format!("failed to download export templates for {}", release))?;
         let result = cache.install(release, &tmp_path);
         let _ = std::fs::remove_file(&tmp_path);
         result?;
@@ -265,6 +277,7 @@ pub fn ensure_export_templates(release: &GodotRelease) -> Result<()> {
 mod tests {
     use super::*;
     use crate::godot::release::GodotVersion;
+    use serial_test::serial;
 
     fn stable(version: &str) -> GodotRelease {
         GodotRelease {
@@ -312,7 +325,10 @@ mod tests {
     fn template_url_omits_zero_patch() {
         let url = template_url(&stable("4.3"));
         assert!(url.contains("version=4.3"), "url: {url}");
-        assert!(!url.contains("4.3.0"), "url should not contain 4.3.0: {url}");
+        assert!(
+            !url.contains("4.3.0"),
+            "url should not contain 4.3.0: {url}"
+        );
     }
 
     #[test]
@@ -336,7 +352,10 @@ mod tests {
 
     #[test]
     fn install_version_mono() {
-        assert_eq!(godot_install_version(&stable_mono("4.3")), "4.3.stable.mono");
+        assert_eq!(
+            godot_install_version(&stable_mono("4.3")),
+            "4.3.stable.mono"
+        );
     }
 
     #[test]
@@ -476,7 +495,10 @@ mod tests {
         copy_dir_all(&src, &dst).unwrap();
 
         assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"hello");
-        assert_eq!(std::fs::read(dst.join("sub").join("b.txt")).unwrap(), b"world");
+        assert_eq!(
+            std::fs::read(dst.join("sub").join("b.txt")).unwrap(),
+            b"world"
+        );
     }
 
     #[test]
@@ -494,7 +516,97 @@ mod tests {
         let dst = dir.path().join("dst");
         copy_dir_all(&src, &dst).unwrap();
 
-        let dst_perms = std::fs::metadata(dst.join("file.txt")).unwrap().permissions();
+        let dst_perms = std::fs::metadata(dst.join("file.txt"))
+            .unwrap()
+            .permissions();
         assert!(!dst_perms.readonly(), "copied file should be writable");
+    }
+
+    // --- godot_downloads_base_url ------------------------------------------
+
+    #[test]
+    #[serial]
+    fn godot_downloads_base_url_override_wins() {
+        unsafe {
+            std::env::set_var(
+                crate::envvars::GODOT_DOWNLOADS_BASE_URL_ENV_VAR,
+                "http://localhost:8080",
+            )
+        };
+        assert_eq!(godot_downloads_base_url(), "http://localhost:8080");
+        unsafe { std::env::remove_var(crate::envvars::GODOT_DOWNLOADS_BASE_URL_ENV_VAR) };
+    }
+
+    #[test]
+    #[serial]
+    fn godot_downloads_base_url_default_when_unset() {
+        unsafe { std::env::remove_var(crate::envvars::GODOT_DOWNLOADS_BASE_URL_ENV_VAR) };
+        assert_eq!(
+            godot_downloads_base_url(),
+            "https://downloads.godotengine.org"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn template_url_uses_overridden_base() {
+        unsafe {
+            std::env::set_var(
+                crate::envvars::GODOT_DOWNLOADS_BASE_URL_ENV_VAR,
+                "http://localhost:8080",
+            )
+        };
+        let url = template_url(&stable("4.3"));
+        assert!(url.starts_with("http://localhost:8080/"), "url: {url}");
+        unsafe { std::env::remove_var(crate::envvars::GODOT_DOWNLOADS_BASE_URL_ENV_VAR) };
+    }
+
+    // --- godot_templates_dir data dir override ------------------------------
+
+    #[test]
+    #[serial]
+    fn godot_templates_dir_uses_override() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var(crate::envvars::GODOT_DATA_DIR_ENV_VAR, dir.path()) };
+        let release = stable("4.3");
+        let templates = godot_templates_dir(&release).unwrap();
+        unsafe { std::env::remove_var(crate::envvars::GODOT_DATA_DIR_ENV_VAR) };
+
+        // The override replaces the data base; the platform godot subdir and
+        // the templates subdir are appended on top.
+        let expected_suffix = if cfg!(target_os = "linux") {
+            Path::new("godot/export_templates")
+        } else {
+            Path::new("Godot/export_templates")
+        };
+        assert!(
+            templates.ends_with(expected_suffix),
+            "templates dir: {}",
+            templates.display()
+        );
+        assert!(
+            templates.starts_with(dir.path()),
+            "templates dir should be under the override, got {}",
+            templates.display()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn godot_templates_dir_falls_back_to_data_dir_when_unset() {
+        unsafe { std::env::remove_var(crate::envvars::GODOT_DATA_DIR_ENV_VAR) };
+        let release = stable("4.3");
+        let templates = godot_templates_dir(&release).unwrap();
+        let data = dirs::data_dir().unwrap();
+        let expected_base = if cfg!(target_os = "linux") {
+            data.join("godot")
+        } else {
+            data.join("Godot")
+        };
+        assert!(
+            templates.starts_with(&expected_base),
+            "templates dir: {}",
+            templates.display()
+        );
     }
 }

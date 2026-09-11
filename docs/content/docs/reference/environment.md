@@ -23,6 +23,33 @@ Useful for CI environments where you want to place the cache on a specific volum
 
 See the [cache reference](@/docs/reference/cache.md) for details about the directory structure.
 
+## `GGG_GODOT_DATA_DIR`
+
+Overrides the Godot editor data directory used when installing export templates. When set, ggg installs templates under this path instead of the platform default. On Linux this is normally `~/.local/share/godot/`; on macOS `~/Library/Application Support/Godot/`; on Windows `%APPDATA%\Godot\`.
+
+```bash
+GGG_GODOT_DATA_DIR=/tmp/godot-data ggg sync
+```
+
+Useful for integration tests and CI environments where writing to the real Godot data directory is undesirable.
+
+## Endpoint overrides
+
+Each of the hardcoded remote endpoints ggg talks to (Godot versions manifest, engine builds API, asset library API, export template downloads) can be overridden with an environment variable. This is primarily intended for testing and for mirroring the endpoints, letting you point ggg at a local or proxied server without code changes.
+
+When unset, the built-in default URL is used.
+
+| Variable                       | Overrides                                                       | Default                                                                                 |
+|--------------------------------|-----------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `GGG_GODOT_MANIFEST_URL`       | Godot versions manifest (`GET` the whole YAML)                  | `https://raw.githubusercontent.com/godotengine/godot-website/master/_data/versions.yml` |
+| `GGG_GODOT_BUILDS_API_URL`     | Godot builds GitHub releases API base (release tag is appended) | `https://api.github.com/repos/godotengine/godot-builds/releases/tags`                   |
+| `GGG_ASSET_LIB_API_URL`        | Godot Asset Library API base                                    | `https://godotengine.org/asset-library/api`                                             |
+| `GGG_GODOT_DOWNLOADS_BASE_URL` | Godot downloads base host used for export templates             | `https://downloads.godotengine.org`                                                     |
+
+```bash
+GGG_GODOT_MANIFEST_URL=http://localhost:8080/versions.yml ggg sync
+```
+
 ## `NO_COLOR`
 
 When set to any value, `ggg diff` suppresses coloured output and emits plain unified diff text instead. Set automatically by most CI environments.

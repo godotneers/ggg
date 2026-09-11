@@ -1,6 +1,6 @@
 use ggg::commands;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 /// A project manager for Godot games.
@@ -177,31 +177,53 @@ struct AddArgs {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { with_export_templates } =>
-            commands::init::run(with_export_templates),
-        Command::Sync { dry_run, force, with_export_templates } =>
-            commands::sync::run(dry_run, force, with_export_templates),
-        Command::Edit { with_export_templates, args } =>
-            commands::edit::run(&args, with_export_templates),
-        Command::Run { with_export_templates, args } =>
-            commands::run::run(&args, with_export_templates),
-        Command::Add(AddArgs { type_or_input, input, name, yes, strip_components, sha256, id }) => {
+        Command::Init {
+            with_export_templates,
+        } => commands::init::run(with_export_templates),
+        Command::Sync {
+            dry_run,
+            force,
+            with_export_templates,
+        } => commands::sync::run(dry_run, force, with_export_templates),
+        Command::Edit {
+            with_export_templates,
+            args,
+        } => commands::edit::run(&args, with_export_templates),
+        Command::Run {
+            with_export_templates,
+            args,
+        } => commands::run::run(&args, with_export_templates),
+        Command::Add(AddArgs {
+            type_or_input,
+            input,
+            name,
+            yes,
+            strip_components,
+            sha256,
+            id,
+        }) => {
             let name = name.as_deref();
             match type_or_input.as_deref() {
-                Some("git")        => commands::add::run_git(input.as_deref(), name, yes),
-                Some("archive")    => commands::add::run_archive(input.as_deref(), name, strip_components, sha256.as_deref()),
-                Some("asset")      => commands::add::run_asset(input.as_deref(), id, name, yes),
+                Some("git") => commands::add::run_git(input.as_deref(), name, yes),
+                Some("archive") => commands::add::run_archive(
+                    input.as_deref(),
+                    name,
+                    strip_components,
+                    sha256.as_deref(),
+                ),
+                Some("asset") => commands::add::run_asset(input.as_deref(), id, name, yes),
                 Some(url_or_query) => commands::add::run_bare(url_or_query, name, yes),
-                None               => bail!("specify a type (git, archive, asset) or provide a URL/query"),
+                None => bail!("specify a type (git, archive, asset) or provide a URL/query"),
             }
         }
-        Command::Deps                      => commands::deps::run(),
-        Command::Remove { name }           => commands::remove::run(&name),
-        Command::Diff { file }             => commands::diff::run(file.as_deref()),
-        Command::LsDep { name, all }       => commands::ls_dep::run(&name, all),
-        Command::Search { query, godot_version } =>
-            commands::search::run(&query, godot_version.as_deref()),
-        Command::Update { name, dry_run } =>
-            commands::update::run(name.as_deref(), dry_run),
+        Command::Deps => commands::deps::run(),
+        Command::Remove { name } => commands::remove::run(&name),
+        Command::Diff { file } => commands::diff::run(file.as_deref()),
+        Command::LsDep { name, all } => commands::ls_dep::run(&name, all),
+        Command::Search {
+            query,
+            godot_version,
+        } => commands::search::run(&query, godot_version.as_deref()),
+        Command::Update { name, dry_run } => commands::update::run(name.as_deref(), dry_run),
     }
 }

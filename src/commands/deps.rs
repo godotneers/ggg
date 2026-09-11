@@ -18,9 +18,12 @@ pub fn run() -> Result<()> {
     }
 
     // Column widths.
-    let name_w = config.dependency.iter()
+    let name_w = config
+        .dependency
+        .iter()
         .map(|d| d.name.len())
-        .max().unwrap_or(4)
+        .max()
+        .unwrap_or(4)
         .max(4);
     let type_w = 7; // "archive" is the longest type label
 
@@ -30,7 +33,8 @@ pub fn run() -> Result<()> {
     for dep in &config.dependency {
         let (type_label, version_info) = match dep.kind() {
             DepKind::Git { git, rev } => {
-                let short_url = git.trim_end_matches(".git")
+                let short_url = git
+                    .trim_end_matches(".git")
                     .rsplit('/')
                     .next()
                     .unwrap_or(git);
@@ -41,11 +45,12 @@ pub fn run() -> Result<()> {
                 let filename = url.rsplit('/').next().unwrap_or(url);
                 ("archive", filename.to_owned())
             }
-            DepKind::AssetLib { asset_id } => {
-                ("asset", format!("asset #{asset_id}"))
-            }
+            DepKind::AssetLib { asset_id } => ("asset", format!("asset #{asset_id}")),
         };
-        println!("{:<name_w$}  {:<type_w$}  {}", dep.name, type_label, version_info);
+        println!(
+            "{:<name_w$}  {:<type_w$}  {}",
+            dep.name, type_label, version_info
+        );
     }
 
     Ok(())

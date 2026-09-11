@@ -20,8 +20,14 @@ use serde::Deserialize;
 
 use super::release::GodotRelease;
 
-const GODOT_BUILDS_API: &str =
-    "https://api.github.com/repos/godotengine/godot-builds/releases/tags";
+/// The Godot builds API base URL, overridable via the `GGG_GODOT_BUILDS_API_URL`
+/// environment variable ([`crate::envvars::GODOT_BUILDS_API_URL_ENV_VAR`]) so
+/// tests can point at a local server.
+pub fn godot_builds_api_url() -> String {
+    std::env::var(crate::envvars::GODOT_BUILDS_API_URL_ENV_VAR).unwrap_or_else(|_| {
+        "https://api.github.com/repos/godotengine/godot-builds/releases/tags".to_string()
+    })
+}
 
 // --- GitHub API types ------------------------------------------------------
 
@@ -73,8 +79,8 @@ impl Platform {
     /// ones.
     fn asset_suffixes(self) -> &'static [&'static str] {
         match self {
-            Self::LinuxX86_64   => &["_linux.x86_64.zip", "_x11.64.zip", "_linux.64.zip"],
-            Self::MacOs         => &["_macos.universal.zip", "_osx.universal.zip", "_osx.fat.zip"],
+            Self::LinuxX86_64 => &["_linux.x86_64.zip", "_x11.64.zip", "_linux.64.zip"],
+            Self::MacOs => &["_macos.universal.zip", "_osx.universal.zip", "_osx.fat.zip"],
             // Standard builds: Godot_v4.x-stable_win64.exe.zip
             // Mono builds:     Godot_v4.x-stable_mono_win64.zip  (no .exe)
             Self::WindowsX86_64 => &["_win64.exe.zip", "_win64.zip"],
@@ -106,7 +112,10 @@ fn select_asset(assets: &[Asset], release: &GodotRelease, platform: Platform) ->
 
     bail!(
         "no suitable asset found for {} {} (mono: {}) on {:?}",
-        release.version, release.flavor, release.mono, platform
+        release.version,
+        release.flavor,
+        release.mono,
+        platform
     )
 }
 
@@ -128,7 +137,7 @@ pub fn download_release(release: &GodotRelease) -> Result<PathBuf> {
 /// Query the GitHub releases API to find the download URL for the given
 /// release on the given platform.
 fn fetch_asset_url(release: &GodotRelease, platform: Platform) -> Result<String> {
-    let url = format!("{}/{}", GODOT_BUILDS_API, release.tag());
+    let url = format!("{}/{}", godot_builds_api_url(), release.tag());
 
     let response = reqwest::blocking::Client::new()
         .get(&url)
@@ -179,8 +188,8 @@ fn download_archive(url: &str, release: &GodotRelease) -> Result<PathBuf> {
 
     // Stream into a named temporary file so partial downloads don't leave
     // a corrupt file in place if we are interrupted.
-    let mut tmp = tempfile::NamedTempFile::new()
-        .context("failed to create temporary file for download")?;
+    let mut tmp =
+        tempfile::NamedTempFile::new().context("failed to create temporary file for download")?;
 
     let mut buf = [0u8; 8192];
     loop {
@@ -197,8 +206,7 @@ fn download_archive(url: &str, release: &GodotRelease) -> Result<PathBuf> {
     pb.finish_with_message(format!("Downloaded Godot {}", release.tag()));
 
     // Persist the temp file so it survives beyond this function's scope.
-    let (_, path) = tmp.keep()
-        .context("failed to persist downloaded archive")?;
+    let (_, path) = tmp.keep().context("failed to persist downloaded archive")?;
 
     Ok(path)
 }
@@ -208,16 +216,24 @@ fn download_archive(url: &str, release: &GodotRelease) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     fn release(version: &str, flavor: &str, mono: bool) -> GodotRelease {
-        GodotRelease { version: version.parse().unwrap(), flavor: flavor.into(), mono }
+        GodotRelease {
+            version: version.parse().unwrap(),
+            flavor: flavor.into(),
+            mono,
+        }
     }
 
     fn make_assets(names: &[&str]) -> Vec<Asset> {
-        names.iter().map(|n| Asset {
-            name: n.to_string(),
-            browser_download_url: format!("https://example.com/{n}"),
-        }).collect()
+        names
+            .iter()
+            .map(|n| Asset {
+                name: n.to_string(),
+                browser_download_url: format!("https://example.com/{n}"),
+            })
+            .collect()
     }
 
     #[test]
@@ -227,7 +243,12 @@ mod tests {
             "Godot_v4.3-stable_win64.exe.zip",
             "Godot_v4.3-stable_macos.universal.zip",
         ]);
-        let url = select_asset(&assets, &release("4.3", "stable", false), Platform::LinuxX86_64).unwrap();
+        let url = select_asset(
+            &assets,
+            &release("4.3", "stable", false),
+            Platform::LinuxX86_64,
+        )
+        .unwrap();
         assert!(url.contains("linux.x86_64"));
     }
 
@@ -237,7 +258,12 @@ mod tests {
             "Godot_v4.3-stable_linux.x86_64.zip",
             "Godot_v4.3-stable_mono_linux.x86_64.zip",
         ]);
-        let url = select_asset(&assets, &release("4.3", "stable", true), Platform::LinuxX86_64).unwrap();
+        let url = select_asset(
+            &assets,
+            &release("4.3", "stable", true),
+            Platform::LinuxX86_64,
+        )
+        .unwrap();
         assert!(url.contains("mono"));
     }
 
@@ -247,7 +273,12 @@ mod tests {
             "Godot_v4.3-stable_linux.x86_64.zip",
             "Godot_v4.3-stable_mono_linux.x86_64.zip",
         ]);
-        let url = select_asset(&assets, &release("4.3", "stable", false), Platform::LinuxX86_64).unwrap();
+        let url = select_asset(
+            &assets,
+            &release("4.3", "stable", false),
+            Platform::LinuxX86_64,
+        )
+        .unwrap();
         assert!(!url.contains("mono"));
     }
 
@@ -255,7 +286,12 @@ mod tests {
     fn select_asset_falls_back_to_legacy_suffix() {
         // Older Godot releases used _x11.64 instead of _linux.x86_64.
         let assets = make_assets(&["Godot_v3.5-stable_x11.64.zip"]);
-        let url = select_asset(&assets, &release("3.5", "stable", false), Platform::LinuxX86_64).unwrap();
+        let url = select_asset(
+            &assets,
+            &release("3.5", "stable", false),
+            Platform::LinuxX86_64,
+        )
+        .unwrap();
         assert!(url.contains("x11.64"));
     }
 
@@ -266,7 +302,12 @@ mod tests {
             "Godot_v4.6-stable_win64.exe.zip",
             "Godot_v4.6-stable_mono_win64.zip",
         ]);
-        let url = select_asset(&assets, &release("4.6", "stable", true), Platform::WindowsX86_64).unwrap();
+        let url = select_asset(
+            &assets,
+            &release("4.6", "stable", true),
+            Platform::WindowsX86_64,
+        )
+        .unwrap();
         assert!(url.contains("mono"));
         assert!(url.contains("win64.zip"));
     }
@@ -277,7 +318,12 @@ mod tests {
             "Godot_v4.6-stable_win64.exe.zip",
             "Godot_v4.6-stable_mono_win64.zip",
         ]);
-        let url = select_asset(&assets, &release("4.6", "stable", false), Platform::WindowsX86_64).unwrap();
+        let url = select_asset(
+            &assets,
+            &release("4.6", "stable", false),
+            Platform::WindowsX86_64,
+        )
+        .unwrap();
         assert!(!url.contains("mono"));
         assert!(url.contains("win64.exe.zip"));
     }
@@ -285,8 +331,39 @@ mod tests {
     #[test]
     fn select_asset_returns_error_when_no_match() {
         let assets = make_assets(&["Godot_v4.3-stable_win64.exe.zip"]);
-        let result = select_asset(&assets, &release("4.3", "stable", false), Platform::LinuxX86_64);
-        assert!(result.unwrap_err().to_string().contains("no suitable asset"));
+        let result = select_asset(
+            &assets,
+            &release("4.3", "stable", false),
+            Platform::LinuxX86_64,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no suitable asset")
+        );
     }
 
+    #[test]
+    #[serial]
+    fn godot_builds_api_url_override_wins() {
+        unsafe {
+            std::env::set_var(
+                crate::envvars::GODOT_BUILDS_API_URL_ENV_VAR,
+                "http://localhost:8080/api",
+            )
+        };
+        assert_eq!(godot_builds_api_url(), "http://localhost:8080/api");
+        unsafe { std::env::remove_var(crate::envvars::GODOT_BUILDS_API_URL_ENV_VAR) };
+    }
+
+    #[test]
+    #[serial]
+    fn godot_builds_api_url_default_when_unset() {
+        unsafe { std::env::remove_var(crate::envvars::GODOT_BUILDS_API_URL_ENV_VAR) };
+        assert_eq!(
+            godot_builds_api_url(),
+            "https://api.github.com/repos/godotengine/godot-builds/releases/tags"
+        );
+    }
 }

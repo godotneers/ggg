@@ -7,7 +7,7 @@ fn main() {
     for rev in ["v9.3.0", "main", &"a".repeat(40)] {
         let dep = Dependency::new_git("gut", url, rev);
         match resolver::resolve(&dep) {
-            Ok(r)  => println!("{rev:20} -> {}", r.sha),
+            Ok(r) => println!("{rev:20} -> {}", r.sha),
             Err(e) => println!("{rev:20} -> ERROR: {e:#}"),
         }
     }

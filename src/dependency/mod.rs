@@ -30,4 +30,3 @@ pub struct ResolvedDependency {
     /// Only populated for `DepKind::AssetLib` deps.
     pub asset_version: Option<u32>,
 }
-

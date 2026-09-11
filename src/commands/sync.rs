@@ -24,16 +24,15 @@ use crate::config::Config;
 use crate::dependency::cache::DependencyCache;
 use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{LocalState, STATE_FILE};
+use crate::dependency::sync::{self, CleanupPlan, DepWork};
 use crate::godot::cache::GodotCache;
 use crate::godot::engine;
 use crate::godot::export_templates;
-use crate::dependency::sync::{self, CleanupPlan, DepWork};
 
 use super::init::ensure_gitignore_entry;
 
 pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()> {
-    let project_root = std::env::current_dir()
-        .context("failed to determine current directory")?;
+    let project_root = std::env::current_dir().context("failed to determine current directory")?;
 
     let config = Config::load(Path::new("ggg.toml"))?;
     let mut lock = LockFile::load_or_empty(Path::new("ggg.lock"))?;
@@ -49,8 +48,15 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
 
     let dep_cache = DependencyCache::from_env()?;
 
-    let sync_plan =
-        sync::plan(&config, &lock, &old_state, state_present, &dep_cache, &project_root, force)?;
+    let sync_plan = sync::plan(
+        &config,
+        &lock,
+        &old_state,
+        state_present,
+        &dep_cache,
+        &project_root,
+        force,
+    )?;
 
     // -------------------------------------------------------------------------
     // Check: any conflicts or --dry-run -> print the plan and stop.
@@ -83,19 +89,24 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
 
     let mut new_state = LocalState::default();
     for work in &sync_plan.works {
-        let total   = work.plan.entry.files.len();
+        let total = work.plan.entry.files.len();
         let written = work.plan.to_write.len();
         if written > 0 {
             println!(
                 "  {} ({}): installed {} file{} ({} total)",
-                work.resolved.dep.name, work.resolve_note,
-                written, if written == 1 { "" } else { "s" }, total,
+                work.resolved.dep.name,
+                work.resolve_note,
+                written,
+                if written == 1 { "" } else { "s" },
+                total,
             );
         } else {
             println!(
                 "  {} ({}): up to date ({} file{})",
-                work.resolved.dep.name, work.resolve_note,
-                total, if total == 1 { "" } else { "s" },
+                work.resolved.dep.name,
+                work.resolve_note,
+                total,
+                if total == 1 { "" } else { "s" },
             );
         }
         lock.upsert(&work.resolved);
@@ -120,26 +131,35 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
 
 fn print_plan(works: &[DepWork], cleanup: &CleanupPlan) {
     for work in works {
-        let total    = work.plan.entry.files.len();
+        let total = work.plan.entry.files.len();
         let to_write = work.plan.to_write.len();
-        let name     = &work.resolved.dep.name;
-        let note     = &work.resolve_note;
+        let name = &work.resolved.dep.name;
+        let note = &work.resolve_note;
 
         if !work.plan.conflicts.is_empty() {
             let n = work.plan.conflicts.modified.len() + work.plan.conflicts.unmanaged.len();
             println!(
                 "  {} ({}): {} conflict{} (would need --force)",
-                name, note, n, if n == 1 { "" } else { "s" },
+                name,
+                note,
+                n,
+                if n == 1 { "" } else { "s" },
             );
         } else if to_write > 0 {
             println!(
                 "  {} ({}): would install {} file{}",
-                name, note, to_write, if to_write == 1 { "" } else { "s" },
+                name,
+                note,
+                to_write,
+                if to_write == 1 { "" } else { "s" },
             );
         } else {
             println!(
                 "  {} ({}): up to date ({} file{})",
-                name, note, total, if total == 1 { "" } else { "s" },
+                name,
+                note,
+                total,
+                if total == 1 { "" } else { "s" },
             );
         }
     }
@@ -148,7 +168,10 @@ fn print_plan(works: &[DepWork], cleanup: &CleanupPlan) {
         println!("  Would remove {}", key);
     }
     for path in &cleanup.modified {
-        println!("  Would remove {} (conflicts: modified since last install)", path);
+        println!(
+            "  Would remove {} (conflicts: modified since last install)",
+            path
+        );
     }
 }
 

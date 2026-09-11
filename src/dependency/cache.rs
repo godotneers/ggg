@@ -64,7 +64,7 @@ impl DependencyCache {
     /// Returns `true` if this dependency is already present in the cache.
     pub fn contains(&self, dep: &ResolvedDependency) -> bool {
         let dir = self.dep_dir(dep);
-        dir.is_dir() && dir.read_dir().map_or(false, |mut d| d.next().is_some())
+        dir.is_dir() && dir.read_dir().is_ok_and(|mut d| d.next().is_some())
     }
 
     /// Install a downloaded dependency artifact into the cache.
@@ -82,14 +82,21 @@ impl DependencyCache {
             DepKind::Git { git, .. } => self.install_git(dep, git, path),
             DepKind::Archive { url, .. } => self.install_archive(dep, url, path),
             DepKind::AssetLib { .. } => {
-                let url = dep.resolved_url.as_deref()
+                let url = dep
+                    .resolved_url
+                    .as_deref()
                     .expect("AssetLib ResolvedDependency must have resolved_url set");
                 self.install_archive(dep, url, path)
             }
         }
     }
 
-    fn install_git(&self, dep: &ResolvedDependency, git: &str, repo_path: &Path) -> Result<PathBuf> {
+    fn install_git(
+        &self,
+        dep: &ResolvedDependency,
+        git: &str,
+        repo_path: &Path,
+    ) -> Result<PathBuf> {
         let dest = self.dep_dir(dep);
         let hash_dir = self.base.join(url_hash(&normalize_url(git)));
 
@@ -97,8 +104,9 @@ impl DependencyCache {
             .prefix(".install-")
             .tempdir_in(&hash_dir)
             .or_else(|_| {
-                std::fs::create_dir_all(&hash_dir)
-                    .with_context(|| format!("failed to create cache directory {}", hash_dir.display()))?;
+                std::fs::create_dir_all(&hash_dir).with_context(|| {
+                    format!("failed to create cache directory {}", hash_dir.display())
+                })?;
                 tempfile::Builder::new()
                     .prefix(".install-")
                     .tempdir_in(&hash_dir)
@@ -109,8 +117,7 @@ impl DependencyCache {
         extract_tree(dep, repo_path, tmp_dir.path())
             .with_context(|| format!("failed to extract tree for {:?}", dep.dep.name))?;
 
-        write_git_metadata(dep, tmp_dir.path())
-            .context("failed to write dependency metadata")?;
+        write_git_metadata(dep, tmp_dir.path()).context("failed to write dependency metadata")?;
 
         std::fs::rename(tmp_dir.path(), &dest)
             .with_context(|| format!("failed to move install into cache at {}", dest.display()))?;
@@ -119,15 +126,22 @@ impl DependencyCache {
         Ok(dest)
     }
 
-    fn install_archive(&self, dep: &ResolvedDependency, url: &str, archive: &Path) -> Result<PathBuf> {
+    fn install_archive(
+        &self,
+        dep: &ResolvedDependency,
+        url: &str,
+        archive: &Path,
+    ) -> Result<PathBuf> {
         let dest = self.dep_dir(dep);
 
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create cache directory {}", parent.display())
+            })?;
         }
-        std::fs::create_dir_all(&dest)
-            .with_context(|| format!("failed to create cache entry directory {}", dest.display()))?;
+        std::fs::create_dir_all(&dest).with_context(|| {
+            format!("failed to create cache entry directory {}", dest.display())
+        })?;
 
         extract_archive(&dep.dep.name, url, &dep.sha, archive, &dest)
             .with_context(|| format!("failed to extract {:?} into cache", dep.dep.name))?;
@@ -145,18 +159,16 @@ impl DependencyCache {
 
     fn dep_dir(&self, dep: &ResolvedDependency) -> PathBuf {
         match dep.dep.kind() {
-            DepKind::Git { git, .. } => self.base
-                .join(url_hash(&normalize_url(git)))
-                .join(&dep.sha),
-            DepKind::Archive { url, .. } => self.base
-                .join(url_hash(url))
-                .join(&dep.sha),
+            DepKind::Git { git, .. } => {
+                self.base.join(url_hash(&normalize_url(git))).join(&dep.sha)
+            }
+            DepKind::Archive { url, .. } => self.base.join(url_hash(url)).join(&dep.sha),
             DepKind::AssetLib { .. } => {
-                let url = dep.resolved_url.as_deref()
+                let url = dep
+                    .resolved_url
+                    .as_deref()
                     .expect("AssetLib ResolvedDependency must have resolved_url set");
-                self.base
-                    .join(url_hash(url))
-                    .join(&dep.sha)
+                self.base.join(url_hash(url)).join(&dep.sha)
             }
         }
     }
@@ -204,7 +216,10 @@ fn url_hash(normalized: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum ArchiveFormat { Zip, TarGz }
+enum ArchiveFormat {
+    Zip,
+    TarGz,
+}
 
 fn detect_archive_format(url: &str) -> ArchiveFormat {
     if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
@@ -228,13 +243,13 @@ fn extract_archive(
     let fmt = detect_archive_format(url);
 
     match fmt {
-        ArchiveFormat::Zip   => archive_util::scan_zip(archive),
+        ArchiveFormat::Zip => archive_util::scan_zip(archive),
         ArchiveFormat::TarGz => archive_util::scan_tar_gz(archive),
     }
     .with_context(|| format!("archive {dep_name:?} contains unsafe paths - refusing to extract"))?;
 
     match fmt {
-        ArchiveFormat::Zip   => archive_util::extract_zip(archive, dest_dir),
+        ArchiveFormat::Zip => archive_util::extract_zip(archive, dest_dir),
         ArchiveFormat::TarGz => archive_util::extract_tar_gz(archive, dest_dir),
     }
     .with_context(|| format!("failed to extract {dep_name:?}"))?;
@@ -245,18 +260,21 @@ fn extract_archive(
 
 #[derive(Serialize)]
 struct ArchiveDepInfo<'a> {
-    name:        &'a str,
-    url:         &'a str,
+    name: &'a str,
+    url: &'a str,
     archive_sha: &'a str,
 }
 
 fn write_archive_metadata(name: &str, url: &str, archive_sha: &str, dest_dir: &Path) -> Result<()> {
-    let info = ArchiveDepInfo { name, url, archive_sha };
-    let content = toml_edit::ser::to_string_pretty(&info)
-        .context("failed to serialize archive metadata")?;
+    let info = ArchiveDepInfo {
+        name,
+        url,
+        archive_sha,
+    };
+    let content =
+        toml_edit::ser::to_string_pretty(&info).context("failed to serialize archive metadata")?;
     let path = dest_dir.join(METADATA_FILE);
-    std::fs::write(&path, &content)
-        .with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(&path, &content).with_context(|| format!("failed to write {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +325,9 @@ fn extract_tree(dep: &ResolvedDependency, repo_path: &Path, dest: &Path) -> Resu
     for entry in index.entries() {
         // Skip non-blob entries (submodules, sparse directories).
         if !entry.mode.contains(gix::index::entry::Mode::FILE)
-            && !entry.mode.contains(gix::index::entry::Mode::FILE_EXECUTABLE)
+            && !entry
+                .mode
+                .contains(gix::index::entry::Mode::FILE_EXECUTABLE)
             && !entry.mode.contains(gix::index::entry::Mode::SYMLINK)
         {
             continue;
@@ -319,7 +339,12 @@ fn extract_tree(dep: &ResolvedDependency, repo_path: &Path, dest: &Path) -> Resu
         attrs.reset();
         attr_stack
             .at_entry(path_bytes, Some(entry.mode), &repo.objects)
-            .with_context(|| format!("failed to get attributes for {:?}", path_bytes.to_str_lossy()))?
+            .with_context(|| {
+                format!(
+                    "failed to get attributes for {:?}",
+                    path_bytes.to_str_lossy()
+                )
+            })?
             .matching_attributes(&mut attrs);
 
         if attrs
@@ -387,21 +412,25 @@ fn write_blob(
 #[derive(Serialize)]
 struct GitDepInfo<'a> {
     name: &'a str,
-    git:  &'a str,
-    rev:  &'a str,
-    sha:  &'a str,
+    git: &'a str,
+    rev: &'a str,
+    sha: &'a str,
 }
 
 fn write_git_metadata(dep: &ResolvedDependency, dest: &Path) -> Result<()> {
     let DepKind::Git { git, rev } = dep.dep.kind() else {
         anyhow::bail!("write_git_metadata called on non-git dep");
     };
-    let info = GitDepInfo { name: &dep.dep.name, git, rev, sha: &dep.sha };
+    let info = GitDepInfo {
+        name: &dep.dep.name,
+        git,
+        rev,
+        sha: &dep.sha,
+    };
     let content = toml_edit::ser::to_string_pretty(&info)
         .context("failed to serialize dependency metadata")?;
     let path = dest.join(METADATA_FILE);
-    std::fs::write(&path, &content)
-        .with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(&path, &content).with_context(|| format!("failed to write {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -432,53 +461,53 @@ mod tests {
     #[test]
     fn normalize_strips_https_protocol() {
         assert_eq!(
-            normalize_url("https://github.com/foo/bar.git"),
-            "github.com/foo/bar"
+            normalize_url("https://example.com/foo/bar.git"),
+            "example.com/foo/bar"
         );
     }
 
     #[test]
     fn normalize_strips_ssh_at_syntax() {
         assert_eq!(
-            normalize_url("git@github.com:foo/bar.git"),
-            "github.com/foo/bar"
+            normalize_url("git@example.com:foo/bar.git"),
+            "example.com/foo/bar"
         );
     }
 
     #[test]
     fn normalize_lowercases() {
         assert_eq!(
-            normalize_url("https://GITHUB.COM/Foo/Bar.git"),
-            "github.com/foo/bar"
+            normalize_url("https://EXAMPLE.com/Foo/Bar.git"),
+            "example.com/foo/bar"
         );
     }
 
     #[test]
     fn normalize_strips_trailing_slashes() {
         assert_eq!(
-            normalize_url("https://github.com/foo/bar/"),
-            "github.com/foo/bar"
+            normalize_url("https://example.com/foo/bar/"),
+            "example.com/foo/bar"
         );
     }
 
     #[test]
     fn normalize_no_git_suffix_unchanged() {
         assert_eq!(
-            normalize_url("https://github.com/foo/bar"),
-            "github.com/foo/bar"
+            normalize_url("https://example.com/foo/bar"),
+            "example.com/foo/bar"
         );
     }
 
     #[test]
     fn same_url_different_protocols_produce_same_hash() {
-        let h1 = url_hash(&normalize_url("https://github.com/foo/bar.git"));
-        let h2 = url_hash(&normalize_url("git@github.com:foo/bar.git"));
+        let h1 = url_hash(&normalize_url("https://example.com/foo/bar.git"));
+        let h2 = url_hash(&normalize_url("git@example.com:foo/bar.git"));
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn url_hash_is_64_hex_chars() {
-        let h = url_hash("github.com/foo/bar");
+        let h = url_hash("example.com/foo/bar");
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -504,8 +533,8 @@ mod tests {
     fn dep_dirs_differ_for_different_urls() {
         let (_dir, cache) = make_cache();
         let sha = "a".repeat(40);
-        let d1 = cache.dep_dir(&resolved("https://github.com/foo/a.git", &sha));
-        let d2 = cache.dep_dir(&resolved("https://github.com/foo/b.git", &sha));
+        let d1 = cache.dep_dir(&resolved("https://example.com/foo/a.git", &sha));
+        let d2 = cache.dep_dir(&resolved("https://example.com/foo/b.git", &sha));
         assert_ne!(d1, d2);
     }
 
@@ -521,10 +550,14 @@ mod tests {
     fn from_env_uses_env_var_when_set() {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: single-threaded test binary.
-        unsafe { std::env::set_var(crate::cache::CACHE_DIR_ENV_VAR, dir.path()); }
+        unsafe {
+            std::env::set_var(crate::envvars::CACHE_DIR_ENV_VAR, dir.path());
+        }
         let cache = DependencyCache::from_env().unwrap();
         // from_env appends "deps" to the cache root.
         assert_eq!(cache.base, dir.path().join("deps"));
-        unsafe { std::env::remove_var(crate::cache::CACHE_DIR_ENV_VAR); }
+        unsafe {
+            std::env::remove_var(crate::envvars::CACHE_DIR_ENV_VAR);
+        }
     }
 }

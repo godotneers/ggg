@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 use indicatif::ProgressBar;
 
@@ -82,7 +82,12 @@ pub fn run_git(git_url: Option<&str>, name_arg: Option<&str>, yes: bool) -> Resu
     Ok(())
 }
 
-pub fn run_archive(archive_url: Option<&str>, name_arg: Option<&str>, strip_components: Option<u32>, sha256: Option<&str>) -> Result<()> {
+pub fn run_archive(
+    archive_url: Option<&str>,
+    name_arg: Option<&str>,
+    strip_components: Option<u32>,
+    sha256: Option<&str>,
+) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
     let mut config = Config::load(ggg_toml)?;
     let theme = ColorfulTheme::default();
@@ -148,7 +153,12 @@ pub fn run_bare(input: &str, name_arg: Option<&str>, yes: bool) -> Result<()> {
 /// - 1 result: confirmation prompt (skipped with `--yes`).
 /// - 2-5 results: interactive picker with a Cancel option.
 /// - 6+ results: error suggesting `ggg search`.
-pub fn run_asset(query: Option<&str>, id_override: Option<u32>, name_arg: Option<&str>, yes: bool) -> Result<()> {
+pub fn run_asset(
+    query: Option<&str>,
+    id_override: Option<u32>,
+    name_arg: Option<&str>,
+    yes: bool,
+) -> Result<()> {
     let ggg_toml = Path::new("ggg.toml");
     let mut config = Config::load(ggg_toml)?;
     let theme = ColorfulTheme::default();
@@ -160,8 +170,9 @@ pub fn run_asset(query: Option<&str>, id_override: Option<u32>, name_arg: Option
 
     // Resolve to a single AssetDetail.
     let detail = if let Some(id) = id_override {
-        asset_lib::get_asset(id)
-            .with_context(|| format!("failed to fetch asset id {id} from the Godot Asset Library"))?
+        asset_lib::get_asset(id).with_context(|| {
+            format!("failed to fetch asset id {id} from the Godot Asset Library")
+        })?
     } else {
         let q = match query {
             Some(q) => q.to_owned(),
@@ -172,31 +183,33 @@ pub fn run_asset(query: Option<&str>, id_override: Option<u32>, name_arg: Option
 
         // A pure number is treated as a direct asset ID.
         if let Ok(id) = q.trim().parse::<u32>() {
-            asset_lib::get_asset(id)
-                .with_context(|| format!("failed to fetch asset id {id} from the Godot Asset Library"))?
+            asset_lib::get_asset(id).with_context(|| {
+                format!("failed to fetch asset id {id} from the Godot Asset Library")
+            })?
         } else {
             let (results, total) = asset_lib::search(&q, &godot_version)
                 .context("failed to search the Godot Asset Library")?;
 
             match results.len() {
-                0 => bail!(
-                    "no assets found for {:?} on Godot {godot_version}",
-                    q
-                ),
+                0 => bail!("no assets found for {:?} on Godot {godot_version}", q),
                 _ if total > 5 => bail!(
                     "found {total} results for {:?}; use `ggg search {q}` to browse, \
                      then `ggg add asset --id <N>` to add a specific one",
                     q
                 ),
-                1 => {
-                    asset_lib::get_asset(results[0].asset_id)
-                        .with_context(|| "failed to fetch asset details from the Godot Asset Library".to_string())?
-                }
+                1 => asset_lib::get_asset(results[0].asset_id).with_context(|| {
+                    "failed to fetch asset details from the Godot Asset Library".to_string()
+                })?,
                 _ => {
                     // 2-5 results: interactive picker.
                     let mut items: Vec<String> = results
                         .iter()
-                        .map(|r| format!("#{} {} - by {} [{}]", r.asset_id, r.title, r.author, r.license))
+                        .map(|r| {
+                            format!(
+                                "#{} {} - by {} [{}]",
+                                r.asset_id, r.title, r.author, r.license
+                            )
+                        })
                         .collect();
                     items.push("Cancel".to_owned());
 
@@ -210,8 +223,9 @@ pub fn run_asset(query: Option<&str>, id_override: Option<u32>, name_arg: Option
                         bail!("cancelled");
                     }
 
-                    asset_lib::get_asset(results[choice].asset_id)
-                        .with_context(|| "failed to fetch asset details from the Godot Asset Library".to_string())?
+                    asset_lib::get_asset(results[choice].asset_id).with_context(|| {
+                        "failed to fetch asset details from the Godot Asset Library".to_string()
+                    })?
                 }
             }
         }
@@ -241,7 +255,10 @@ pub fn run_asset(query: Option<&str>, id_override: Option<u32>, name_arg: Option
     config.dependency.push(dep);
     config.save(ggg_toml)?;
 
-    println!("Added {name:?} (asset #{}). Run `ggg sync` to install.", detail.asset_id);
+    println!(
+        "Added {name:?} (asset #{}). Run `ggg sync` to install.",
+        detail.asset_id
+    );
     Ok(())
 }
 
@@ -271,9 +288,7 @@ fn resolve_name(
 /// Split `s` into a git URL and an optional revision.
 fn parse_url_rev(s: &str) -> (String, Option<String>) {
     if let Some((left, right)) = s.rsplit_once('@') {
-        let looks_like_url = left.contains("://")
-            || left.ends_with(".git")
-            || left.contains(':');
+        let looks_like_url = left.contains("://") || left.ends_with(".git") || left.contains(':');
         if looks_like_url {
             return (left.to_owned(), Some(right.to_owned()));
         }
@@ -321,7 +336,8 @@ mod tests {
     #[test]
     fn resolve_name_uses_arg_over_default() {
         let theme = ColorfulTheme::default();
-        let result = resolve_name(Some("custom"), Some("inferred".to_owned()), false, &theme).unwrap();
+        let result =
+            resolve_name(Some("custom"), Some("inferred".to_owned()), false, &theme).unwrap();
         assert_eq!(result, "custom");
     }
 
@@ -335,48 +351,91 @@ mod tests {
     #[test]
     fn resolve_name_arg_takes_precedence_over_yes() {
         let theme = ColorfulTheme::default();
-        let result = resolve_name(Some("explicit"), Some("inferred".to_owned()), true, &theme).unwrap();
+        let result =
+            resolve_name(Some("explicit"), Some("inferred".to_owned()), true, &theme).unwrap();
         assert_eq!(result, "explicit");
     }
 
     #[test]
     fn https_url_with_rev() {
-        let (url, rev) = parse_url_rev("https://github.com/bitwes/Gut.git@v9.3.0");
-        assert_eq!(url, "https://github.com/bitwes/Gut.git");
+        let (url, rev) = parse_url_rev("https://example.com/gut.git@v9.3.0");
+        assert_eq!(url, "https://example.com/gut.git");
         assert_eq!(rev.as_deref(), Some("v9.3.0"));
     }
 
     #[test]
     fn https_url_without_rev() {
-        let (url, rev) = parse_url_rev("https://github.com/bitwes/Gut.git");
-        assert_eq!(url, "https://github.com/bitwes/Gut.git");
+        let (url, rev) = parse_url_rev("https://example.com/gut.git");
+        assert_eq!(url, "https://example.com/gut.git");
         assert!(rev.is_none());
     }
 
     #[test]
     fn ssh_scp_url_with_rev() {
-        let (url, rev) = parse_url_rev("git@github.com:user/repo.git@main");
-        assert_eq!(url, "git@github.com:user/repo.git");
+        let (url, rev) = parse_url_rev("git@example.com:user/repo.git@main");
+        assert_eq!(url, "git@example.com:user/repo.git");
         assert_eq!(rev.as_deref(), Some("main"));
     }
 
     #[test]
     fn infer_name_strips_git_suffix_and_lowercases() {
-        assert_eq!(infer_name_from_git("https://github.com/bitwes/Gut.git"), "gut");
+        assert_eq!(infer_name_from_git("https://example.com/Gut.git"), "gut");
     }
 
     #[test]
     fn infer_name_no_git_suffix() {
-        assert_eq!(infer_name_from_git("https://github.com/user/my-addon"), "my-addon");
+        assert_eq!(
+            infer_name_from_git("https://example.com/user/my-addon"),
+            "my-addon"
+        );
     }
 
     #[test]
     fn infer_name_trailing_slash() {
-        assert_eq!(infer_name_from_git("https://github.com/user/Repo.git/"), "repo");
+        assert_eq!(
+            infer_name_from_git("https://example.com/user/Repo.git/"),
+            "repo"
+        );
     }
 
     #[test]
     fn infer_name_ssh_scp_url() {
-        assert_eq!(infer_name_from_git("git@github.com:user/phantom-camera.git"), "phantom-camera");
+        assert_eq!(
+            infer_name_from_git("git@example.com:user/phantom-camera.git"),
+            "phantom-camera"
+        );
+    }
+
+    #[test]
+    fn infer_name_asset_splits_on_separator() {
+        assert_eq!(infer_name_from_asset("GUT - Godot Unit Testing"), "gut");
+    }
+
+    #[test]
+    fn infer_name_asset_lowercases() {
+        assert_eq!(infer_name_from_asset("Phantom Camera"), "phantom-camera");
+    }
+
+    #[test]
+    fn infer_name_asset_replaces_non_alphanumeric() {
+        assert_eq!(
+            infer_name_from_asset("My  Awesome__Addon!"),
+            "my-awesome-addon"
+        );
+    }
+
+    #[test]
+    fn infer_name_asset_collapses_hyphen_runs() {
+        assert_eq!(infer_name_from_asset("a---b"), "a-b");
+    }
+
+    #[test]
+    fn infer_name_asset_strips_leading_trailing_hyphens() {
+        assert_eq!(infer_name_from_asset("- hello -"), "hello");
+    }
+
+    #[test]
+    fn infer_name_asset_simple() {
+        assert_eq!(infer_name_from_asset("Simple Name"), "simple-name");
     }
 }

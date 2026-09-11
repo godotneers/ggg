@@ -11,8 +11,7 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-
+use anyhow::{Context, Result, bail};
 
 // ---------------------------------------------------------------------------
 // Scan
@@ -42,7 +41,11 @@ pub fn scan_tar_gz(archive_path: &Path) -> Result<()> {
         .with_context(|| format!("failed to open archive {}", archive_path.display()))?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
-    for (i, entry) in archive.entries().context("failed to read tar entries")?.enumerate() {
+    for (i, entry) in archive
+        .entries()
+        .context("failed to read tar entries")?
+        .enumerate()
+    {
         let entry = entry.with_context(|| format!("failed to read tar entry {i}"))?;
         let path = entry
             .path()
@@ -95,7 +98,11 @@ pub fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<()> {
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
 
-    for (i, entry) in archive.entries().context("failed to read tar entries")?.enumerate() {
+    for (i, entry) in archive
+        .entries()
+        .context("failed to read tar entries")?
+        .enumerate()
+    {
         let mut entry = entry.with_context(|| format!("failed to read tar entry {i}"))?;
 
         if entry.header().entry_type().is_dir() {
@@ -239,10 +246,11 @@ mod tests {
     fn extract_zip_skips_macosx_entries() {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("a.zip");
-        std::fs::write(&archive, make_zip(&[
-            ("__MACOSX/._something", b"junk"),
-            ("real.txt", b"real"),
-        ])).unwrap();
+        std::fs::write(
+            &archive,
+            make_zip(&[("__MACOSX/._something", b"junk"), ("real.txt", b"real")]),
+        )
+        .unwrap();
         let dest = dir.path().join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
@@ -262,7 +270,9 @@ mod tests {
 
         extract_zip(&archive, &dest).unwrap();
 
-        let perms = std::fs::metadata(dest.join("file.txt")).unwrap().permissions();
+        let perms = std::fs::metadata(dest.join("file.txt"))
+            .unwrap()
+            .permissions();
         assert!(perms.readonly());
     }
 }

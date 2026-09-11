@@ -14,11 +14,11 @@
 use anyhow::{Context, Result};
 
 use crate::config::{DepKind, Dependency};
+use crate::dependency::ResolvedDependency;
 use crate::dependency::cache::DependencyCache;
 use crate::dependency::download;
 use crate::dependency::lockfile::LockFile;
 use crate::dependency::resolver;
-use crate::dependency::ResolvedDependency;
 
 /// Resolve `dep` and ensure it is present in `cache`.
 ///
@@ -61,8 +61,7 @@ pub fn ensure_dependency(
             return Ok((re_resolved, format!("re-resolved {re_sha_prefix}")));
         }
         Err(e) => {
-            return Err(e)
-                .with_context(|| format!("failed to download dependency {:?}", dep.name))
+            return Err(e).with_context(|| format!("failed to download dependency {:?}", dep.name));
         }
     };
 
@@ -91,7 +90,8 @@ fn ensure(resolved: ResolvedDependency, cache: &DependencyCache) -> Result<Resol
     let resolved = ResolvedDependency { sha, ..resolved };
 
     if !cache.contains(&resolved) {
-        cache.install(&resolved, &path)
+        cache
+            .install(&resolved, &path)
             .with_context(|| format!("failed to install {:?} into cache", resolved.dep.name))?;
     }
 

@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::config::Config;
 
@@ -33,11 +33,15 @@ mod tests {
 
     fn write_config(path: &Path, deps: &[(&str, &str, &str)]) {
         let config = Config {
-            project: Project { godot: "4.3-stable".parse().unwrap(), export_templates: false },
+            project: Project {
+                godot: "4.3-stable".parse().unwrap(),
+                export_templates: false,
+            },
             sync: None,
-            dependency: deps.iter().map(|(name, git, rev)| {
-                Dependency::new_git(*name, *git, *rev)
-            }).collect(),
+            dependency: deps
+                .iter()
+                .map(|(name, git, rev)| Dependency::new_git(*name, *git, *rev))
+                .collect(),
         };
         config.save(path).unwrap();
     }
@@ -52,10 +56,17 @@ mod tests {
     fn removes_named_dependency() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ggg.toml");
-        write_config(&path, &[
-            ("gut",            "https://github.com/bitwes/Gut.git",            "v9.3.0"),
-            ("phantom-camera", "https://github.com/ramokz/phantom-camera.git", "main"),
-        ]);
+        write_config(
+            &path,
+            &[
+                ("gut", "https://example.com/gut.git", "v9.3.0"),
+                (
+                    "phantom-camera",
+                    "https://example.com/phantom-camera.git",
+                    "main",
+                ),
+            ],
+        );
 
         remove(&path, "gut");
 
@@ -68,11 +79,14 @@ mod tests {
     fn removes_only_the_named_dependency() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ggg.toml");
-        write_config(&path, &[
-            ("a", "https://github.com/u/a.git", "main"),
-            ("b", "https://github.com/u/b.git", "main"),
-            ("c", "https://github.com/u/c.git", "main"),
-        ]);
+        write_config(
+            &path,
+            &[
+                ("a", "https://example.com/u/a.git", "main"),
+                ("b", "https://example.com/u/b.git", "main"),
+                ("c", "https://example.com/u/c.git", "main"),
+            ],
+        );
 
         remove(&path, "b");
 
@@ -86,9 +100,7 @@ mod tests {
     fn unknown_name_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ggg.toml");
-        write_config(&path, &[
-            ("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"),
-        ]);
+        write_config(&path, &[("gut", "https://example.com/gut.git", "v9.3.0")]);
 
         let config = Config::load(&path).unwrap();
         assert!(!config.dependency.iter().any(|d| d.name == "nonexistent"));
@@ -98,9 +110,7 @@ mod tests {
     fn removing_last_dependency_leaves_empty_list() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ggg.toml");
-        write_config(&path, &[
-            ("gut", "https://github.com/bitwes/Gut.git", "v9.3.0"),
-        ]);
+        write_config(&path, &[("gut", "https://example.com/gut.git", "v9.3.0")]);
 
         remove(&path, "gut");
 

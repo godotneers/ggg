@@ -15,7 +15,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 
@@ -41,13 +41,23 @@ pub fn download(dep: &ResolvedDependency) -> Result<(PathBuf, String)> {
             Ok((path, dep.sha.clone()))
         }
         DepKind::Archive { url, sha256, .. } => {
-            let sha_hint = if dep.sha.is_empty() { sha256 } else { Some(dep.sha.as_str()) };
+            let sha_hint = if dep.sha.is_empty() {
+                sha256
+            } else {
+                Some(dep.sha.as_str())
+            };
             download_archive(&dep.dep.name, url, sha_hint)
         }
         DepKind::AssetLib { .. } => {
-            let url = dep.resolved_url.as_deref()
+            let url = dep
+                .resolved_url
+                .as_deref()
                 .expect("AssetLib ResolvedDependency must have resolved_url set");
-            let sha_hint = if dep.sha.is_empty() { None } else { Some(dep.sha.as_str()) };
+            let sha_hint = if dep.sha.is_empty() {
+                None
+            } else {
+                Some(dep.sha.as_str())
+            };
             download_archive(&dep.dep.name, url, sha_hint)
         }
     }
@@ -71,15 +81,12 @@ fn download_git(name: &str, url: &str, sha: &str) -> Result<PathBuf> {
         .context("failed to create temporary directory for dependency download")?;
 
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.dim} {msg}")?
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-    );
+    pb.set_style(ProgressStyle::with_template("{spinner:.dim} {msg}")?.tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "));
     pb.set_message(format!("Fetching {name}"));
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
-    let repo = gix::init_bare(tmp.path())
-        .context("failed to initialise temporary bare repository")?;
+    let repo =
+        gix::init_bare(tmp.path()).context("failed to initialise temporary bare repository")?;
 
     if let Err(e) = fetch(&repo, url, sha, Some(NonZeroU32::new(1).unwrap())) {
         pb.set_message(format!(
@@ -94,12 +101,7 @@ fn download_git(name: &str, url: &str, sha: &str) -> Result<PathBuf> {
     Ok(tmp.keep())
 }
 
-fn fetch(
-    repo: &gix::Repository,
-    url: &str,
-    sha: &str,
-    depth: Option<NonZeroU32>,
-) -> Result<()> {
+fn fetch(repo: &gix::Repository, url: &str, sha: &str, depth: Option<NonZeroU32>) -> Result<()> {
     let url_parsed = gix::url::parse(url.as_bytes().into())
         .with_context(|| format!("invalid git URL: {url:?}"))?;
 
@@ -121,7 +123,7 @@ fn fetch(
 
     let prepare = match depth {
         Some(d) => prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(d)),
-        None    => prepare,
+        None => prepare,
     };
 
     prepare
@@ -143,13 +145,11 @@ fn download_archive(
     let (sha, path) = download_to_temp(url, dep_name)
         .with_context(|| format!("failed to download {dep_name:?} from {url:?}"))?;
 
-    if let Some(expected) = sha_hint {
-        if sha != expected {
-            let _ = std::fs::remove_file(&path);
-            bail!(
-                "SHA-256 mismatch for {dep_name:?}:\n  expected: {expected}\n  got:      {sha}",
-            );
-        }
+    if let Some(expected) = sha_hint
+        && sha != expected
+    {
+        let _ = std::fs::remove_file(&path);
+        bail!("SHA-256 mismatch for {dep_name:?}:\n  expected: {expected}\n  got:      {sha}",);
     }
 
     Ok((path, sha))
@@ -196,19 +196,29 @@ pub(crate) fn download_to_temp(url: &str, name: &str) -> Result<(String, PathBuf
     {
         let mut writer = std::io::BufWriter::new(tmp.as_file());
         loop {
-            let n = response.read(&mut buf).context("error reading download response")?;
-            if n == 0 { break; }
+            let n = response
+                .read(&mut buf)
+                .context("error reading download response")?;
+            if n == 0 {
+                break;
+            }
             hasher.update(&buf[..n]);
-            writer.write_all(&buf[..n]).context("failed to write archive to temp file")?;
+            writer
+                .write_all(&buf[..n])
+                .context("failed to write archive to temp file")?;
             pb.inc(n as u64);
         }
-        writer.flush().context("failed to flush archive temp file")?;
+        writer
+            .flush()
+            .context("failed to flush archive temp file")?;
     }
 
     pb.finish_and_clear();
 
     let sha = format!("{:x}", hasher.finalize());
-    let (_, path) = tmp.keep().context("failed to persist temporary archive file")?;
+    let (_, path) = tmp
+        .keep()
+        .context("failed to persist temporary archive file")?;
 
     Ok((sha, path))
 }
@@ -234,7 +244,10 @@ mod tests {
 
     #[test]
     fn strip_components_zero() {
-        assert_eq!(strip_components("a/b/c.txt", 0), Some(PathBuf::from("a/b/c.txt")));
+        assert_eq!(
+            strip_components("a/b/c.txt", 0),
+            Some(PathBuf::from("a/b/c.txt"))
+        );
     }
 
     #[test]

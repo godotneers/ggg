@@ -25,7 +25,16 @@ diffy = "0.3"
 globset = "0.4"
 
 [dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
 tempfile = "3"
+serial_test = "3"
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "blocking-http-transport-reqwest-rust-tls", "blocking-network-client", "attributes"] }
+zip = "2"
+sha2 = "0.10"
 
 # The profile that 'dist' will build with
 [profile.dist]

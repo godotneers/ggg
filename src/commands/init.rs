@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, FuzzySelect, theme::ColorfulTheme};
 use indicatif::ProgressBar;
 
@@ -86,10 +86,17 @@ pub fn run(with_export_templates: bool) -> Result<()> {
             .interact()?
     };
 
-    let release = GodotRelease { version: chosen.version.clone(), flavor: chosen.flavor.clone(), mono };
+    let release = GodotRelease {
+        version: chosen.version.clone(),
+        flavor: chosen.flavor.clone(),
+        mono,
+    };
 
     let config = Config {
-        project: Project { godot: release, export_templates: manage_templates },
+        project: Project {
+            godot: release,
+            export_templates: manage_templates,
+        },
         sync: None,
         dependency: vec![],
     };
@@ -132,8 +139,7 @@ fn create_project_godot(path: &Path, release: &GodotRelease) -> Result<()> {
         ));
     }
 
-    std::fs::write(path, content)
-        .with_context(|| format!("failed to create {}", path.display()))
+    std::fs::write(path, content).with_context(|| format!("failed to create {}", path.display()))
 }
 
 /// Ensure `entry` appears in `gitignore_path`, creating the file if needed.

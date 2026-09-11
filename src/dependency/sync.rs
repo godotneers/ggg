@@ -34,11 +34,11 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 
 use crate::config::{Config, DepKind};
+use crate::dependency::ResolvedDependency;
 use crate::dependency::cache::DependencyCache;
 use crate::dependency::ensure::ensure_dependency;
 use crate::dependency::lockfile::LockFile;
 use crate::dependency::state::{InstalledFile, LocalState, StateEntry};
-use crate::dependency::ResolvedDependency;
 use crate::utils::path_key;
 
 /// Metadata filename written into every cache entry; excluded from project
@@ -123,14 +123,27 @@ pub fn plan(
 
         let cache_dir = dep_cache.entry_path(&resolved);
 
-        let force_overwrite = config.sync.as_ref()
+        let force_overwrite = config
+            .sync
+            .as_ref()
             .map(|s| s.force_overwrite.as_slice())
             .unwrap_or(&[]);
 
-        let install_plan = plan_install(&resolved, &cache_dir, project_root, old_state, force, force_overwrite)
-            .with_context(|| format!("failed to plan install for {:?}", dep.name))?;
+        let install_plan = plan_install(
+            &resolved,
+            &cache_dir,
+            project_root,
+            old_state,
+            force,
+            force_overwrite,
+        )
+        .with_context(|| format!("failed to plan install for {:?}", dep.name))?;
 
-        works.push(DepWork { resolved, resolve_note, plan: install_plan });
+        works.push(DepWork {
+            resolved,
+            resolve_note,
+            plan: install_plan,
+        });
     }
 
     let new_entries: Vec<StateEntry> = works.iter().map(|w| w.plan.entry.clone()).collect();
@@ -208,7 +221,10 @@ fn plan_install(
         .collect();
 
     Ok(InstallPlan {
-        entry: StateEntry { name: dep.dep.name.clone(), files: all_files },
+        entry: StateEntry {
+            name: dep.dep.name.clone(),
+            files: all_files,
+        },
         to_write,
         conflicts,
     })
@@ -240,7 +256,10 @@ fn plan_cleanup(
                  Run `ggg sync` again to restore the state file."
             );
         }
-        return Ok(CleanupPlan { to_remove: vec![], modified: vec![] });
+        return Ok(CleanupPlan {
+            to_remove: vec![],
+            modified: vec![],
+        });
     }
 
     let new_paths: HashSet<&str> = new_entries
@@ -256,13 +275,12 @@ fn plan_cleanup(
             if new_paths.contains(file.path.as_str()) {
                 continue;
             }
-            let abs = project_root
-                .join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let abs = project_root.join(file.path.replace('/', std::path::MAIN_SEPARATOR_STR));
             if !abs.exists() {
                 continue;
             }
-            let on_disk_hash = hash_file(&abs)
-                .with_context(|| format!("failed to hash {}", abs.display()))?;
+            let on_disk_hash =
+                hash_file(&abs).with_context(|| format!("failed to hash {}", abs.display()))?;
             if on_disk_hash != file.hash && !force {
                 modified.push(file.path.clone());
             } else {
@@ -271,14 +289,16 @@ fn plan_cleanup(
         }
     }
 
-    Ok(CleanupPlan { to_remove, modified })
+    Ok(CleanupPlan {
+        to_remove,
+        modified,
+    })
 }
 
 fn execute_cleanup(plan: &CleanupPlan, project_root: &Path) -> Result<()> {
     let mut removed_dirs: Vec<PathBuf> = Vec::new();
     for (abs, display) in &plan.to_remove {
-        std::fs::remove_file(abs)
-            .with_context(|| format!("failed to remove {}", display))?;
+        std::fs::remove_file(abs).with_context(|| format!("failed to remove {}", display))?;
         println!("  Removed {}", display);
         if let Some(parent) = abs.parent() {
             removed_dirs.push(parent.to_path_buf());
@@ -297,7 +317,9 @@ fn collect_file_pairs(
     cache_dir: &Path,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
     let n_strip = match dep.dep.kind() {
-        DepKind::Archive { strip_components, .. } => strip_components,
+        DepKind::Archive {
+            strip_components, ..
+        } => strip_components,
         DepKind::Git { .. } => dep.dep.strip_components.unwrap_or(0),
         DepKind::AssetLib { .. } => dep.dep.strip_components.unwrap_or(1),
     };
@@ -319,7 +341,9 @@ fn collect_file_pairs(
     // directory name like "examples" excludes all files inside it, matching
     // the same prefix semantics as `map` entries.
     let excluded = |dest: &Path| -> bool {
-        let Some(ref s) = exclude_set else { return false };
+        let Some(ref s) = exclude_set else {
+            return false;
+        };
         let mut current = dest;
         loop {
             if s.is_match(path_key(current)) {
@@ -333,7 +357,10 @@ fn collect_file_pairs(
     };
 
     match &dep.dep.map {
-        None => Ok(stripped.into_iter().filter(|(_, dest)| !excluded(dest)).collect()),
+        None => Ok(stripped
+            .into_iter()
+            .filter(|(_, dest)| !excluded(dest))
+            .collect()),
         Some(map_entries) => {
             let mut pairs = Vec::new();
             for entry in map_entries {
@@ -386,8 +413,8 @@ fn collect_recursive(
     for entry in std::fs::read_dir(current)
         .with_context(|| format!("failed to read directory {}", current.display()))?
     {
-        let entry = entry
-            .with_context(|| format!("failed to read entry in {}", current.display()))?;
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", current.display()))?;
         let path = entry.path();
         let name = entry.file_name();
 
@@ -434,8 +461,8 @@ fn collect_conflicts(
             continue;
         }
 
-        let on_disk_hash = hash_file(&dest)
-            .with_context(|| format!("failed to hash {}", dest.display()))?;
+        let on_disk_hash =
+            hash_file(&dest).with_context(|| format!("failed to hash {}", dest.display()))?;
         let would_install = hash_file(src)
             .with_context(|| format!("failed to hash cache file {}", src.display()))?;
 
@@ -461,7 +488,10 @@ fn collect_conflicts(
 // Staging and atomic rename into place
 // ---------------------------------------------------------------------------
 
-fn stage_and_install(pairs: &[(PathBuf, PathBuf)], project_root: &Path) -> Result<Vec<InstalledFile>> {
+fn stage_and_install(
+    pairs: &[(PathBuf, PathBuf)],
+    project_root: &Path,
+) -> Result<Vec<InstalledFile>> {
     let tmp = tempfile::Builder::new()
         .prefix(".ggg-install-")
         .tempdir_in(project_root)
@@ -484,7 +514,7 @@ fn stage_and_install(pairs: &[(PathBuf, PathBuf)], project_root: &Path) -> Resul
         let mut perms = std::fs::metadata(&staged_path)
             .with_context(|| format!("failed to read metadata of {}", staged_path.display()))?
             .permissions();
-        perms.set_readonly(false);
+        crate::utils::set_writable(&mut perms);
         std::fs::set_permissions(&staged_path, perms)
             .with_context(|| format!("failed to set permissions on {}", staged_path.display()))?;
 
@@ -508,7 +538,10 @@ fn stage_and_install(pairs: &[(PathBuf, PathBuf)], project_root: &Path) -> Resul
             .strip_prefix(project_root)
             .expect("final_path is always under project_root");
 
-        installed.push(InstalledFile { path: path_key(rel), hash: hash.clone() });
+        installed.push(InstalledFile {
+            path: path_key(rel),
+            hash: hash.clone(),
+        });
     }
 
     Ok(installed)
@@ -525,23 +558,31 @@ fn build_overwrite_set(patterns: &[String]) -> Result<GlobSet> {
             Glob::new(p).with_context(|| format!("invalid force_overwrite pattern: {:?}", p))?,
         );
     }
-    builder.build().context("failed to build force_overwrite glob set")
+    builder
+        .build()
+        .context("failed to build force_overwrite glob set")
 }
 
 fn build_exclude_set(patterns: &[String], dep_name: &str) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
-        builder.add(
-            Glob::new(p)
-                .with_context(|| format!("dependency {:?}: invalid exclude pattern: {:?}", dep_name, p))?,
-        );
+        builder.add(Glob::new(p).with_context(|| {
+            format!(
+                "dependency {:?}: invalid exclude pattern: {:?}",
+                dep_name, p
+            )
+        })?);
     }
-    builder.build().with_context(|| format!("dependency {:?}: failed to build exclude glob set", dep_name))
+    builder.build().with_context(|| {
+        format!(
+            "dependency {:?}: failed to build exclude glob set",
+            dep_name
+        )
+    })
 }
 
 fn hash_file(path: &Path) -> Result<String> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let data = std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut h = Sha256::new();
     h.update(&data);
     Ok(format!("{:x}", h.finalize()))
@@ -549,7 +590,7 @@ fn hash_file(path: &Path) -> Result<String> {
 
 fn prune_empty_dirs(dirs: &[PathBuf], project_root: &Path) {
     let mut unique = dirs.to_vec();
-    unique.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+    unique.sort_by_key(|b| std::cmp::Reverse(b.components().count()));
     unique.dedup();
 
     for start in unique {
@@ -589,14 +630,24 @@ mod tests {
     fn make_dep(name: &str, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
         let mut dep = Dependency::new_git(name, "https://example.com/repo.git", "main");
         dep.map = map;
-        ResolvedDependency { dep, sha: "a".repeat(40), resolved_url: None, asset_version: None }
+        ResolvedDependency {
+            dep,
+            sha: "a".repeat(40),
+            resolved_url: None,
+            asset_version: None,
+        }
     }
 
     fn make_archive_dep(name: &str, strip: u32, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
         let mut dep = Dependency::new_archive(name, "https://example.com/archive.zip");
         dep.strip_components = if strip == 0 { None } else { Some(strip) };
         dep.map = map;
-        ResolvedDependency { dep, sha: "abc123".into(), resolved_url: None, asset_version: None }
+        ResolvedDependency {
+            dep,
+            sha: "abc123".into(),
+            resolved_url: None,
+            asset_version: None,
+        }
     }
 
     fn write(dir: &Path, rel: &str, content: &[u8]) {
@@ -629,7 +680,7 @@ mod tests {
     fn state_owns(dep: &str, path: &str, content: &[u8]) -> LocalState {
         let mut state = LocalState::default();
         state.upsert_entry(StateEntry {
-            name:  dep.to_string(),
+            name: dep.to_string(),
             files: vec![InstalledFile {
                 path: path.to_string(),
                 hash: content_hash(content),
@@ -655,73 +706,88 @@ mod tests {
 
     #[test]
     fn no_map_installs_full_tree() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "addons/gut/gut.gd",     b"# gut");
+        write(cache.path(), "addons/gut/gut.gd", b"# gut");
         write(cache.path(), "addons/gut/sub/util.gd", b"# util");
 
         let entry = inst(
             &make_dep("gut", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 2);
-        assert_eq!(read(project.path(), "addons/gut/gut.gd"),      b"# gut");
+        assert_eq!(read(project.path(), "addons/gut/gut.gd"), b"# gut");
         assert_eq!(read(project.path(), "addons/gut/sub/util.gd"), b"# util");
     }
 
     #[test]
     fn map_from_only_installs_subtree_at_same_path() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "addons/gut/gut.gd",  b"# gut");
-        write(cache.path(), "other/ignored.gd",   b"# ignored");
+        write(cache.path(), "addons/gut/gut.gd", b"# gut");
+        write(cache.path(), "other/ignored.gd", b"# ignored");
 
-        let map = vec![MapEntry { from: "addons/gut".to_string(), to: None }];
+        let map = vec![MapEntry {
+            from: "addons/gut".to_string(),
+            to: None,
+        }];
         let entry = inst(
             &make_dep("gut", Some(map)),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
-        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
         assert!(!exists(project.path(), "other/ignored.gd"));
     }
 
     #[test]
     fn map_from_to_installs_at_renamed_destination() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "src/plugin.gd", b"# plugin");
 
         let map = vec![MapEntry {
             from: "src".to_string(),
-            to:   Some("addons/myplugin".to_string()),
+            to: Some("addons/myplugin".to_string()),
         }];
         inst(
             &make_dep("plugin", Some(map)),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
-        assert!(exists(project.path(),  "addons/myplugin/plugin.gd"));
+        assert!(exists(project.path(), "addons/myplugin/plugin.gd"));
         assert!(!exists(project.path(), "src/plugin.gd"));
     }
 
     #[test]
     fn metadata_file_is_excluded_from_install() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "plugin.gd",  b"# plugin");
+        write(cache.path(), "plugin.gd", b"# plugin");
         write(cache.path(), METADATA_FILE, b"name = 'test'");
 
         let entry = inst(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
         assert!(!exists(project.path(), METADATA_FILE));
@@ -729,14 +795,20 @@ mod tests {
 
     #[test]
     fn map_missing_from_path_returns_error() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
 
-        let map = vec![MapEntry { from: "nonexistent".to_string(), to: None }];
+        let map = vec![MapEntry {
+            from: "nonexistent".to_string(),
+            to: None,
+        }];
         let result = plan_install(
             &make_dep("dep", Some(map)),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
         );
 
         assert!(result.is_err());
@@ -744,7 +816,11 @@ mod tests {
 
     // --- exclude ------------------------------------------------------------
 
-    fn make_dep_with_exclude(name: &str, map: Option<Vec<MapEntry>>, exclude: Vec<String>) -> ResolvedDependency {
+    fn make_dep_with_exclude(
+        name: &str,
+        map: Option<Vec<MapEntry>>,
+        exclude: Vec<String>,
+    ) -> ResolvedDependency {
         let mut dep = make_dep(name, map);
         dep.dep.exclude = Some(exclude);
         dep
@@ -752,58 +828,89 @@ mod tests {
 
     #[test]
     fn exclude_bare_directory_removes_subtree_without_map() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "addons/gut/gut.gd",        b"# gut");
+        write(cache.path(), "addons/gut/gut.gd", b"# gut");
         write(cache.path(), "addons/gut/examples/e.gd", b"# example");
 
         let dep = make_dep_with_exclude("gut", None, vec!["addons/gut/examples".into()]);
-        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+        let entry = inst(
+            &dep,
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
-        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
         assert!(!exists(project.path(), "addons/gut/examples/e.gd"));
     }
 
     #[test]
     fn exclude_glob_pattern_removes_matching_files_without_map() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "addons/gut/gut.gd",        b"# gut");
+        write(cache.path(), "addons/gut/gut.gd", b"# gut");
         write(cache.path(), "addons/gut/examples/e.gd", b"# example");
 
         let dep = make_dep_with_exclude("gut", None, vec!["addons/gut/examples/**".into()]);
-        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+        let entry = inst(
+            &dep,
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
-        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
         assert!(!exists(project.path(), "addons/gut/examples/e.gd"));
     }
 
     #[test]
     fn exclude_bare_directory_removes_subtree_with_map() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "addons/gut/gut.gd",        b"# gut");
+        write(cache.path(), "addons/gut/gut.gd", b"# gut");
         write(cache.path(), "addons/gut/examples/e.gd", b"# example");
 
-        let map = vec![MapEntry { from: "addons/gut".to_string(), to: None }];
+        let map = vec![MapEntry {
+            from: "addons/gut".to_string(),
+            to: None,
+        }];
         let dep = make_dep_with_exclude("gut", Some(map), vec!["addons/gut/examples".into()]);
-        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+        let entry = inst(
+            &dep,
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
-        assert!(exists(project.path(),  "addons/gut/gut.gd"));
+        assert!(exists(project.path(), "addons/gut/gut.gd"));
         assert!(!exists(project.path(), "addons/gut/examples/e.gd"));
     }
 
     #[test]
     fn exclude_non_matching_pattern_keeps_all_files() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "addons/gut/gut.gd", b"# gut");
 
         let dep = make_dep_with_exclude("gut", None, vec!["addons/other/**".into()]);
-        let entry = inst(&dep, cache.path(), project.path(), &LocalState::default(), false).unwrap();
+        let entry = inst(
+            &dep,
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
         assert!(exists(project.path(), "addons/gut/gut.gd"));
@@ -811,12 +918,19 @@ mod tests {
 
     #[test]
     fn exclude_invalid_pattern_returns_error() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# plugin");
 
         let dep = make_dep_with_exclude("dep", None, vec!["[invalid".into()]);
-        let result = plan_install(&dep, cache.path(), project.path(), &LocalState::default(), false, &[]);
+        let result = plan_install(
+            &dep,
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        );
 
         assert!(result.is_err());
     }
@@ -825,7 +939,7 @@ mod tests {
 
     #[test]
     fn installed_files_are_writable() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
@@ -836,25 +950,31 @@ mod tests {
 
         inst(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert!(is_writable(project.path(), "plugin.gd"));
     }
 
     #[test]
     fn state_entry_hashes_match_installed_content() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let content = b"# hello";
         write(cache.path(), "plugin.gd", content);
 
         let entry = inst(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 1);
         assert_eq!(entry.files[0].path, "plugin.gd");
@@ -863,15 +983,18 @@ mod tests {
 
     #[test]
     fn state_entry_paths_use_forward_slashes() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "addons/gut/gut.gd", b"# gut");
 
         let entry = inst(
             &make_dep("gut", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files[0].path, "addons/gut/gut.gd");
     }
@@ -880,67 +1003,82 @@ mod tests {
 
     #[test]
     fn no_conflict_when_target_absent() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
         let plan = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
 
         assert!(plan.conflicts.is_empty());
     }
 
     #[test]
     fn no_conflict_when_content_matches_regardless_of_state() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let content = b"# same";
-        write(cache.path(),   "plugin.gd", content);
+        write(cache.path(), "plugin.gd", content);
         write(project.path(), "plugin.gd", content);
 
         let plan = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
 
         assert!(plan.conflicts.is_empty());
     }
 
     #[test]
     fn no_conflict_when_ggg_owns_file_and_dep_updated_content() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let old = b"# old";
         let new = b"# new (dep updated)";
-        write(cache.path(),   "plugin.gd", new);
+        write(cache.path(), "plugin.gd", new);
         write(project.path(), "plugin.gd", old);
         let state = state_owns("dep", "plugin.gd", old);
 
         inst(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &state, false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &state,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(read(project.path(), "plugin.gd"), new);
     }
 
     #[test]
     fn conflict_when_user_file_exists_with_different_content() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd", b"# dep content");
+        write(cache.path(), "plugin.gd", b"# dep content");
         write(project.path(), "plugin.gd", b"# user content");
 
         let plan = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
 
         assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()));
         assert!(plan.conflicts.modified.is_empty());
@@ -948,17 +1086,21 @@ mod tests {
 
     #[test]
     fn conflict_message_flags_user_modified_ggg_file() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd", b"# new dep content");
+        write(cache.path(), "plugin.gd", b"# new dep content");
         write(project.path(), "plugin.gd", b"# user modified");
         let state = state_owns("dep", "plugin.gd", b"# original ggg content");
 
         let plan = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &state, false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &state,
+            false,
+            &[],
+        )
+        .unwrap();
 
         assert!(plan.conflicts.modified.contains(&"plugin.gd".to_string()));
         assert!(plan.conflicts.unmanaged.is_empty());
@@ -966,16 +1108,19 @@ mod tests {
 
     #[test]
     fn force_overwrites_conflicting_user_file() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd", b"# dep content");
+        write(cache.path(), "plugin.gd", b"# dep content");
         write(project.path(), "plugin.gd", b"# user content");
 
         inst(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), true,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            true,
+        )
+        .unwrap();
 
         assert_eq!(read(project.path(), "plugin.gd"), b"# dep content");
     }
@@ -984,56 +1129,79 @@ mod tests {
 
     #[test]
     fn force_overwrite_pattern_bypasses_conflict() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(),   "addons/gut/gut.import", b"# dep import");
-        write(project.path(), "addons/gut/gut.import", b"# godot-modified import");
+        write(cache.path(), "addons/gut/gut.import", b"# dep import");
+        write(
+            project.path(),
+            "addons/gut/gut.import",
+            b"# godot-modified import",
+        );
 
         let patterns = vec!["**/*.import".to_string()];
         let plan = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &patterns,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &patterns,
+        )
+        .unwrap();
 
         assert!(plan.conflicts.is_empty());
         assert_eq!(plan.to_write.len(), 1);
 
         execute_install(&plan, project.path()).unwrap();
-        assert_eq!(read(project.path(), "addons/gut/gut.import"), b"# dep import");
+        assert_eq!(
+            read(project.path(), "addons/gut/gut.import"),
+            b"# dep import"
+        );
     }
 
     #[test]
     fn force_overwrite_does_not_affect_non_matching_files() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(),   "plugin.gd",    b"# dep");
-        write(cache.path(),   "plugin.import", b"# dep import");
-        write(project.path(), "plugin.gd",    b"# user modified");
+        write(cache.path(), "plugin.gd", b"# dep");
+        write(cache.path(), "plugin.import", b"# dep import");
+        write(project.path(), "plugin.gd", b"# user modified");
         write(project.path(), "plugin.import", b"# godot modified");
 
         let patterns = vec!["**/*.import".to_string()];
         let plan = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &patterns,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &patterns,
+        )
+        .unwrap();
 
         assert!(plan.conflicts.unmanaged.contains(&"plugin.gd".to_string()));
-        assert!(plan.conflicts.unmanaged.iter().all(|p| p != "plugin.import"));
+        assert!(
+            plan.conflicts
+                .unmanaged
+                .iter()
+                .all(|p| p != "plugin.import")
+        );
     }
 
     #[test]
     fn force_overwrite_invalid_pattern_returns_error() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
         let patterns = vec!["[invalid".to_string()];
         let result = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &patterns,
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &patterns,
         );
 
         assert!(result.is_err());
@@ -1043,40 +1211,52 @@ mod tests {
 
     #[test]
     fn second_install_writes_nothing_when_content_unchanged() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "addons/gut/gut.gd", b"# gut");
         write(cache.path(), "addons/gut/util.gd", b"# util");
 
         let first = plan_install(
             &make_dep("gut", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
         assert_eq!(first.to_write.len(), 2);
         execute_install(&first, project.path()).unwrap();
 
         let second = plan_install(
             &make_dep("gut", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
         assert_eq!(second.to_write.len(), 0);
         assert_eq!(second.entry.files.len(), 2);
     }
 
     #[test]
     fn second_install_writes_only_changed_files() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "a.gd", b"# a");
         write(cache.path(), "b.gd", b"# b");
 
         let first = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
         execute_install(&first, project.path()).unwrap();
         let mut state = LocalState::default();
         state.upsert_entry(first.entry);
@@ -1085,9 +1265,13 @@ mod tests {
 
         let second = plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &state, false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &state,
+            false,
+            &[],
+        )
+        .unwrap();
         assert_eq!(second.to_write.len(), 1);
         execute_install(&second, project.path()).unwrap();
         assert_eq!(read(project.path(), "b.gd"), b"# b updated");
@@ -1097,31 +1281,39 @@ mod tests {
 
     #[test]
     fn plan_only_writes_no_files() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "plugin.gd", b"# content");
 
         plan_install(
             &make_dep("dep", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
 
         assert!(!exists(project.path(), "plugin.gd"));
     }
 
     #[test]
     fn plan_returns_correct_entry() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let content = b"# content";
         write(cache.path(), "addons/gut/gut.gd", content);
 
         let plan = plan_install(
             &make_dep("gut", None),
-            cache.path(), project.path(),
-            &LocalState::default(), false, &[],
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(plan.entry.files.len(), 1);
         assert_eq!(plan.entry.files[0].path, "addons/gut/gut.gd");
@@ -1194,7 +1386,7 @@ mod tests {
 
     #[test]
     fn missing_stale_file_is_silently_skipped() {
-        let project  = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
         let old_state = state_owns("dep", "plugin.gd", b"# content");
 
         let plan = plan_cleanup(&old_state, &[], project.path(), true, false).unwrap();
@@ -1206,10 +1398,7 @@ mod tests {
         let project = TempDir::new().unwrap();
         write(project.path(), "plugin.gd", b"# some file");
 
-        let plan = plan_cleanup(
-            &LocalState::default(), &[], project.path(),
-            false, false,
-        ).unwrap();
+        let plan = plan_cleanup(&LocalState::default(), &[], project.path(), false, false).unwrap();
         execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(exists(project.path(), "plugin.gd"));
@@ -1233,7 +1422,7 @@ mod tests {
     fn non_empty_dirs_not_pruned_after_cleanup() {
         let project = TempDir::new().unwrap();
         let content = b"# file";
-        write(project.path(), "addons/gut/gut.gd",     content);
+        write(project.path(), "addons/gut/gut.gd", content);
         write(project.path(), "addons/other/other.gd", b"# other");
         let old_state = state_owns("gut", "addons/gut/gut.gd", content);
 
@@ -1241,8 +1430,8 @@ mod tests {
         execute_cleanup(&plan, project.path()).unwrap();
 
         assert!(!exists(project.path(), "addons/gut"));
-        assert!(exists(project.path(),  "addons/other/other.gd"));
-        assert!(exists(project.path(),  "addons"));
+        assert!(exists(project.path(), "addons/other/other.gd"));
+        assert!(exists(project.path(), "addons"));
     }
 
     #[test]
@@ -1261,16 +1450,19 @@ mod tests {
 
     #[test]
     fn strip_components_one_strips_wrapper_dir() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "wrapper/addons/gut/gut.gd",  b"# gut");
+        write(cache.path(), "wrapper/addons/gut/gut.gd", b"# gut");
         write(cache.path(), "wrapper/addons/gut/util.gd", b"# util");
 
         let entry = inst(
             &make_archive_dep("gut", 1, None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(entry.files.len(), 2);
         assert!(exists(project.path(), "addons/gut/gut.gd"));
@@ -1280,16 +1472,19 @@ mod tests {
 
     #[test]
     fn strip_components_skips_entries_entirely_within_stripped_prefix() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        write(cache.path(), "wrapper/README.md",         b"# readme");
+        write(cache.path(), "wrapper/README.md", b"# readme");
         write(cache.path(), "wrapper/addons/gut/gut.gd", b"# gut");
 
         inst(
             &make_archive_dep("gut", 1, None),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
         assert!(exists(project.path(), "README.md"));
         assert!(exists(project.path(), "addons/gut/gut.gd"));
@@ -1297,19 +1492,25 @@ mod tests {
 
     #[test]
     fn strip_then_map_uses_post_strip_paths() {
-        let cache   = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write(cache.path(), "wrapper/addons/gut/gut.gd", b"# gut");
-        write(cache.path(), "wrapper/other/ignored.gd",  b"# ignored");
+        write(cache.path(), "wrapper/other/ignored.gd", b"# ignored");
 
-        let map = vec![MapEntry { from: "addons/gut".into(), to: Some("addons/my_gut".into()) }];
+        let map = vec![MapEntry {
+            from: "addons/gut".into(),
+            to: Some("addons/my_gut".into()),
+        }];
         inst(
             &make_archive_dep("gut", 1, Some(map)),
-            cache.path(), project.path(),
-            &LocalState::default(), false,
-        ).unwrap();
+            cache.path(),
+            project.path(),
+            &LocalState::default(),
+            false,
+        )
+        .unwrap();
 
-        assert!(exists(project.path(),  "addons/my_gut/gut.gd"));
+        assert!(exists(project.path(), "addons/my_gut/gut.gd"));
         assert!(!exists(project.path(), "addons/gut/gut.gd"));
         assert!(!exists(project.path(), "wrapper"));
         assert!(!exists(project.path(), "other/ignored.gd"));

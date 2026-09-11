@@ -91,10 +91,9 @@ impl LockFile {
 
     /// Serialise and write `ggg.lock` to `path`.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let content = toml_edit::ser::to_string_pretty(self)
-            .context("failed to serialise lock file")?;
-        std::fs::write(path, content)
-            .with_context(|| format!("failed to write {}", path.display()))
+        let content =
+            toml_edit::ser::to_string_pretty(self).context("failed to serialise lock file")?;
+        std::fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
     }
 
     /// Insert or update the lock entry for `dep`.
@@ -104,39 +103,39 @@ impl LockFile {
     pub fn upsert(&mut self, dep: &ResolvedDependency) {
         let entry = match dep.dep.kind() {
             DepKind::Git { git, rev } => LockEntry {
-                name:          dep.dep.name.clone(),
-                git:           Some(git.to_owned()),
-                rev:           Some(rev.to_owned()),
-                sha:           Some(dep.sha.clone()),
-                url:           None,
-                archive_sha:   None,
-                asset_id:      None,
+                name: dep.dep.name.clone(),
+                git: Some(git.to_owned()),
+                rev: Some(rev.to_owned()),
+                sha: Some(dep.sha.clone()),
+                url: None,
+                archive_sha: None,
+                asset_id: None,
                 asset_version: None,
             },
             DepKind::Archive { url, .. } => LockEntry {
-                name:          dep.dep.name.clone(),
-                git:           None,
-                rev:           None,
-                sha:           None,
-                url:           Some(url.to_owned()),
-                archive_sha:   Some(dep.sha.clone()),
-                asset_id:      None,
+                name: dep.dep.name.clone(),
+                git: None,
+                rev: None,
+                sha: None,
+                url: Some(url.to_owned()),
+                archive_sha: Some(dep.sha.clone()),
+                asset_id: None,
                 asset_version: None,
             },
             DepKind::AssetLib { asset_id } => LockEntry {
-                name:          dep.dep.name.clone(),
-                git:           None,
-                rev:           None,
-                sha:           None,
-                url:           dep.resolved_url.clone(),
-                archive_sha:   Some(dep.sha.clone()),
-                asset_id:      Some(asset_id),
+                name: dep.dep.name.clone(),
+                git: None,
+                rev: None,
+                sha: None,
+                url: dep.resolved_url.clone(),
+                archive_sha: Some(dep.sha.clone()),
+                asset_id: Some(asset_id),
                 asset_version: dep.asset_version,
             },
         };
         match self.entries.iter_mut().find(|e| e.name == dep.dep.name) {
             Some(existing) => *existing = entry,
-            None           => self.entries.push(entry),
+            None => self.entries.push(entry),
         }
     }
 
@@ -149,9 +148,7 @@ impl LockFile {
         self.entries
             .iter()
             .find(|e| {
-                e.name == name
-                    && e.git.as_deref() == Some(git)
-                    && e.rev.as_deref() == Some(rev)
+                e.name == name && e.git.as_deref() == Some(git) && e.rev.as_deref() == Some(rev)
             })
             .and_then(|e| e.sha.as_deref())
     }
@@ -218,7 +215,7 @@ mod tests {
 
     #[test]
     fn load_or_empty_returns_empty_when_file_absent() {
-        let dir  = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
         let lock = LockFile::load_or_empty(&dir.path().join("ggg.lock")).unwrap();
         assert!(lock.entries.is_empty());
     }
@@ -229,7 +226,10 @@ mod tests {
         lock.upsert(&make_resolved("gut", &"a".repeat(40)));
         assert_eq!(lock.entries.len(), 1);
         assert_eq!(lock.entries[0].name, "gut");
-        assert_eq!(lock.entries[0].sha.as_deref(), Some("a".repeat(40).as_str()));
+        assert_eq!(
+            lock.entries[0].sha.as_deref(),
+            Some("a".repeat(40).as_str())
+        );
     }
 
     #[test]
@@ -238,7 +238,10 @@ mod tests {
         lock.upsert(&make_resolved("gut", &"a".repeat(40)));
         lock.upsert(&make_resolved("gut", &"b".repeat(40)));
         assert_eq!(lock.entries.len(), 1);
-        assert_eq!(lock.entries[0].sha.as_deref(), Some("b".repeat(40).as_str()));
+        assert_eq!(
+            lock.entries[0].sha.as_deref(),
+            Some("b".repeat(40).as_str())
+        );
     }
 
     #[test]
@@ -251,8 +254,14 @@ mod tests {
             &archive_sha,
         ));
         assert_eq!(lock.entries.len(), 1);
-        assert_eq!(lock.entries[0].url.as_deref(), Some("https://example.com/debug_draw_3d.zip"));
-        assert_eq!(lock.entries[0].archive_sha.as_deref(), Some(archive_sha.as_str()));
+        assert_eq!(
+            lock.entries[0].url.as_deref(),
+            Some("https://example.com/debug_draw_3d.zip")
+        );
+        assert_eq!(
+            lock.entries[0].archive_sha.as_deref(),
+            Some(archive_sha.as_str())
+        );
         assert!(lock.entries[0].git.is_none());
         assert!(lock.entries[0].sha.is_none());
     }
@@ -260,7 +269,7 @@ mod tests {
     #[test]
     fn remove_deletes_named_entry_only() {
         let mut lock = LockFile::default();
-        lock.upsert(&make_resolved("gut",     &"a".repeat(40)));
+        lock.upsert(&make_resolved("gut", &"a".repeat(40)));
         lock.upsert(&make_resolved("phantom", &"b".repeat(40)));
         lock.remove("gut");
         assert_eq!(lock.entries.len(), 1);
@@ -281,29 +290,38 @@ mod tests {
     fn locked_sha_returns_none_when_rev_changed() {
         let mut lock = LockFile::default();
         lock.upsert(&make_resolved_rev("gut", "v9.3.0", &"a".repeat(40)));
-        assert!(lock.locked_sha("gut", "https://example.com/repo.git", "v9.4.0").is_none());
+        assert!(
+            lock.locked_sha("gut", "https://example.com/repo.git", "v9.4.0")
+                .is_none()
+        );
     }
 
     #[test]
     fn locked_sha_returns_none_when_git_changed() {
         let mut lock = LockFile::default();
         lock.upsert(&make_resolved_rev("gut", "main", &"a".repeat(40)));
-        assert!(lock.locked_sha("gut", "https://other.example.com/repo.git", "main").is_none());
+        assert!(
+            lock.locked_sha("gut", "https://other.example.com/repo.git", "main")
+                .is_none()
+        );
     }
 
     #[test]
     fn locked_sha_returns_none_for_unknown_name() {
         let lock = LockFile::default();
-        assert!(lock.locked_sha("gut", "https://example.com/repo.git", "main").is_none());
+        assert!(
+            lock.locked_sha("gut", "https://example.com/repo.git", "main")
+                .is_none()
+        );
     }
 
     #[test]
     fn save_load_round_trip() {
-        let dir  = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
         let path = dir.path().join("ggg.lock");
 
         let mut lock = LockFile::default();
-        lock.upsert(&make_resolved("gut",     &"a".repeat(40)));
+        lock.upsert(&make_resolved("gut", &"a".repeat(40)));
         lock.upsert(&make_resolved("phantom", &"b".repeat(40)));
         lock.save(&path).unwrap();
 
@@ -311,7 +329,10 @@ mod tests {
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[0].name, "gut");
         assert_eq!(loaded.entries[1].name, "phantom");
-        assert_eq!(loaded.entries[1].sha.as_deref(), Some("b".repeat(40).as_str()));
+        assert_eq!(
+            loaded.entries[1].sha.as_deref(),
+            Some("b".repeat(40).as_str())
+        );
     }
 
     #[test]
@@ -332,7 +353,14 @@ mod tests {
     #[test]
     fn locked_archive_sha_returns_none_when_url_changed() {
         let mut lock = LockFile::default();
-        lock.upsert(&make_resolved_archive("foo", "https://example.com/foo_v1.zip", &"a".repeat(64)));
-        assert!(lock.locked_archive_sha("foo", "https://example.com/foo_v2.zip").is_none());
+        lock.upsert(&make_resolved_archive(
+            "foo",
+            "https://example.com/foo_v1.zip",
+            &"a".repeat(64),
+        ));
+        assert!(
+            lock.locked_archive_sha("foo", "https://example.com/foo_v2.zip")
+                .is_none()
+        );
     }
 }

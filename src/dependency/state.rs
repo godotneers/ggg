@@ -99,14 +99,14 @@ impl LocalState {
                 .with_context(|| format!("failed to read metadata of {}", path.display()))?
                 .permissions();
             if perms.readonly() {
-                perms.set_readonly(false);
+                crate::utils::set_writable(&mut perms);
                 std::fs::set_permissions(path, perms)
                     .with_context(|| format!("failed to make {} writable", path.display()))?;
             }
         }
 
-        let content = toml_edit::ser::to_string_pretty(self)
-            .context("failed to serialise local state")?;
+        let content =
+            toml_edit::ser::to_string_pretty(self).context("failed to serialise local state")?;
         std::fs::write(path, &content)
             .with_context(|| format!("failed to write {}", path.display()))?;
 
@@ -143,7 +143,7 @@ impl LocalState {
     pub fn upsert_entry(&mut self, entry: StateEntry) {
         match self.entries.iter_mut().find(|e| e.name == entry.name) {
             Some(existing) => *existing = entry,
-            None           => self.entries.push(entry),
+            None => self.entries.push(entry),
         }
     }
 
@@ -164,7 +164,7 @@ mod tests {
 
     fn make_entry(name: &str, path: &str, hash: &str) -> StateEntry {
         StateEntry {
-            name:  name.to_string(),
+            name: name.to_string(),
             files: vec![InstalledFile {
                 path: path.to_string(),
                 hash: hash.to_string(),
@@ -221,9 +221,11 @@ mod tests {
 
     #[test]
     fn load_or_empty_returns_true_and_data_when_file_exists() {
-        let dir  = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
         let path = dir.path().join(STATE_FILE);
-        state_with("gut", "addons/gut/gut.gd", "abc123").save(&path).unwrap();
+        state_with("gut", "addons/gut/gut.gd", "abc123")
+            .save(&path)
+            .unwrap();
 
         let (loaded, present) = LocalState::load_or_empty(&path).unwrap();
         assert!(present);
@@ -232,7 +234,7 @@ mod tests {
 
     #[test]
     fn save_makes_file_readonly() {
-        let dir  = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
         let path = dir.path().join(STATE_FILE);
         state_with("gut", "a.gd", "h").save(&path).unwrap();
         assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
@@ -240,7 +242,7 @@ mod tests {
 
     #[test]
     fn save_can_overwrite_readonly_file() {
-        let dir  = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
         let path = dir.path().join(STATE_FILE);
 
         state_with("gut", "a.gd", "old").save(&path).unwrap();
@@ -267,8 +269,11 @@ mod tests {
     fn upsert_replaces_existing_entry_without_duplication() {
         let mut state = state_with("gut", "addons/gut.gd", "old");
         state.upsert_entry(StateEntry {
-            name:  "gut".to_string(),
-            files: vec![InstalledFile { path: "addons/gut.gd".to_string(), hash: "new".to_string() }],
+            name: "gut".to_string(),
+            files: vec![InstalledFile {
+                path: "addons/gut.gd".to_string(),
+                hash: "new".to_string(),
+            }],
         });
         assert_eq!(state.entries.len(), 1);
         assert!(state.is_owned("addons/gut.gd", "new"));
@@ -278,8 +283,8 @@ mod tests {
     #[test]
     fn remove_entry_removes_correct_entry() {
         let mut state = LocalState::default();
-        state.upsert_entry(make_entry("gut",   "addons/gut.gd",   "abc"));
-        state.upsert_entry(make_entry("other", "other.gd",        "def"));
+        state.upsert_entry(make_entry("gut", "addons/gut.gd", "abc"));
+        state.upsert_entry(make_entry("other", "other.gd", "def"));
         state.remove_entry("gut");
         assert!(!state.is_managed_path("addons/gut.gd"));
         assert!(state.is_managed_path("other.gd"));

@@ -16,7 +16,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,11 @@ pub struct GodotVersion {
 impl GodotVersion {
     /// Construct a `GodotVersion` directly from its components.
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 }
 
@@ -173,17 +177,19 @@ impl FromStr for GodotRelease {
     fn from_str(s: &str) -> anyhow::Result<Self> {
         let (base, mono) = match s.strip_suffix("-mono") {
             Some(b) => (b, true),
-            None    => (s, false),
+            None => (s, false),
         };
         let (version_str, flavor) = base
             .split_once('-')
-            .with_context(|| {
-                format!("invalid Godot release {:?}: expected VERSION-FLAVOR", s)
-            })?;
+            .with_context(|| format!("invalid Godot release {:?}: expected VERSION-FLAVOR", s))?;
         let version = version_str
             .parse()
             .with_context(|| format!("invalid version in Godot release {:?}", s))?;
-        Ok(Self { version, flavor: flavor.to_string(), mono })
+        Ok(Self {
+            version,
+            flavor: flavor.to_string(),
+            mono,
+        })
     }
 }
 
@@ -213,7 +219,10 @@ pub(super) fn validate_path_component(field: &str, value: &str) -> anyhow::Resul
     if value.is_empty() {
         bail!("GodotRelease {field} must not be empty");
     }
-    if !value.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-') {
+    if !value
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
+    {
         bail!("GodotRelease {field} contains invalid characters: \"{value}\"");
     }
     Ok(())
@@ -243,7 +252,10 @@ mod tests {
 
     #[test]
     fn version_zero_patch_equals_no_patch() {
-        assert_eq!("4.3.0".parse::<GodotVersion>().unwrap(), "4.3".parse::<GodotVersion>().unwrap());
+        assert_eq!(
+            "4.3.0".parse::<GodotVersion>().unwrap(),
+            "4.3".parse::<GodotVersion>().unwrap()
+        );
     }
 
     #[test]
@@ -321,7 +333,12 @@ mod tests {
 
     #[test]
     fn release_display_round_trips() {
-        for s in &["4.3-stable", "4.3-stable-mono", "4.3.1-rc1", "4.7-dev4-mono"] {
+        for s in &[
+            "4.3-stable",
+            "4.3-stable-mono",
+            "4.3.1-rc1",
+            "4.7-dev4-mono",
+        ] {
             assert_eq!(s.parse::<GodotRelease>().unwrap().to_string(), *s);
         }
     }

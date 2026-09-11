@@ -44,9 +44,24 @@ pub fn run(query: &str, godot_version_override: Option<&str>) -> Result<()> {
     }
 
     // Column widths.
-    let id_w     = results.iter().map(|r| digits(r.asset_id)).max().unwrap_or(2).max(2);
-    let title_w  = results.iter().map(|r| r.title.len()).max().unwrap_or(5).max(5).min(40);
-    let author_w = results.iter().map(|r| r.author.len()).max().unwrap_or(6).max(6).min(20);
+    let id_w = results
+        .iter()
+        .map(|r| digits(r.asset_id))
+        .max()
+        .unwrap_or(2)
+        .max(2);
+    let title_w = results
+        .iter()
+        .map(|r| r.title.len())
+        .max()
+        .unwrap_or(5)
+        .clamp(5, 40);
+    let author_w = results
+        .iter()
+        .map(|r| r.author.len())
+        .max()
+        .unwrap_or(6)
+        .clamp(6, 20);
 
     println!(
         "{:id_w$}  {:<title_w$}  {:<author_w$}  License",
@@ -73,7 +88,10 @@ pub fn run(query: &str, godot_version_override: Option<&str>) -> Result<()> {
         );
     } else {
         println!();
-        println!("Found {total} result{}{version_label}.", if total == 1 { "" } else { "s" });
+        println!(
+            "Found {total} result{}{version_label}.",
+            if total == 1 { "" } else { "s" }
+        );
     }
 
     println!("Use `ggg add asset --id <N>` to add a specific asset.");
@@ -85,10 +103,58 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_owned()
     } else {
-        format!("{}..", &s[..max.saturating_sub(2)])
+        // Cut at a UTF-8 character boundary within the byte budget so
+        // multi-byte characters are never sliced in half.
+        let budget = max.saturating_sub(2);
+        let cut = s
+            .char_indices()
+            .take_while(|&(i, _)| i <= budget)
+            .map(|(i, _)| i)
+            .last()
+            .unwrap_or(0);
+        format!("{}..", &s[..cut])
     }
 }
 
 fn digits(n: u32) -> usize {
     if n == 0 { 1 } else { n.ilog10() as usize + 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digits_counts_decimal_places() {
+        assert_eq!(digits(0), 1);
+        assert_eq!(digits(1), 1);
+        assert_eq!(digits(9), 1);
+        assert_eq!(digits(10), 2);
+        assert_eq!(digits(99), 2);
+        assert_eq!(digits(100), 3);
+        assert_eq!(digits(999), 3);
+        assert_eq!(digits(1_000), 4);
+        assert_eq!(digits(u32::MAX), 10);
+    }
+
+    #[test]
+    fn truncate_leaves_short_strings_untouched() {
+        assert_eq!(truncate("hi", 10), "hi");
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_appends_dots_at_byte_cut() {
+        assert_eq!(truncate("hello world", 5), "hel..");
+        assert_eq!(truncate("hello world", 2), "..");
+        assert_eq!(truncate("hello world", 1), "..");
+    }
+
+    #[test]
+    fn truncate_survives_multi_byte_characters() {
+        // "你" is 3 bytes, so a byte-only cut would panic by slicing through
+        // the middle of a character. The cut must land on a char boundary.
+        assert_eq!(truncate("你好世界", 5), "你..");
+        assert_eq!(truncate("abc你def", 5), "abc..");
+    }
 }

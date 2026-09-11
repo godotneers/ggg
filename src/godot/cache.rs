@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::release::GodotRelease;
 
@@ -48,7 +48,7 @@ impl GodotCache {
         // We consider a release cached if its directory exists and contains
         // at least one file - an empty directory is not a valid install.
         let dir = self.release_dir(release);
-        dir.is_dir() && dir.read_dir().map_or(false, |mut d| d.next().is_some())
+        dir.is_dir() && dir.read_dir().is_ok_and(|mut d| d.next().is_some())
     }
 
     /// Returns the path to the Godot executable for this release.
@@ -76,14 +76,16 @@ impl GodotCache {
 
         // Remove any previous (possibly partial) install.
         if dir.exists() {
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to remove existing install at {}", dir.display()))?;
+            std::fs::remove_dir_all(&dir).with_context(|| {
+                format!("failed to remove existing install at {}", dir.display())
+            })?;
         }
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create cache directory {}", dir.display()))?;
 
-        crate::utils::archive::scan_zip(archive)
-            .with_context(|| format!("Godot archive contains unsafe paths - refusing to extract"))?;
+        crate::utils::archive::scan_zip(archive).with_context(|| {
+            "Godot archive contains unsafe paths - refusing to extract".to_string()
+        })?;
         crate::utils::archive::extract_zip(archive, &dir)?;
 
         let executable = find_executable(&dir)?;
@@ -195,10 +197,12 @@ fn is_godot_executable(path: &Path) -> bool {
         Some(n) => n.to_lowercase(),
         None => return false,
     };
-    name.starts_with("godot") && (
-        name.ends_with(".exe")    // Windows
-        || name.contains("linux") // Linux
-    )
+    name.starts_with("godot")
+        && (
+            name.ends_with(".exe")    // Windows
+        || name.contains("linux")
+            // Linux
+        )
 }
 
 /// Returns `true` if this is the Windows console-window variant of the
@@ -206,7 +210,7 @@ fn is_godot_executable(path: &Path) -> bool {
 fn is_console_executable(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map_or(false, |n| n.to_lowercase().contains("console"))
+        .is_some_and(|n| n.to_lowercase().contains("console"))
 }
 
 #[cfg(unix)]
@@ -233,11 +237,19 @@ mod tests {
     }
 
     fn stable(version: &str) -> GodotRelease {
-        GodotRelease { version: version.parse().unwrap(), flavor: "stable".into(), mono: false }
+        GodotRelease {
+            version: version.parse().unwrap(),
+            flavor: "stable".into(),
+            mono: false,
+        }
     }
 
     fn stable_mono(version: &str) -> GodotRelease {
-        GodotRelease { version: version.parse().unwrap(), flavor: "stable".into(), mono: true }
+        GodotRelease {
+            version: version.parse().unwrap(),
+            flavor: "stable".into(),
+            mono: true,
+        }
     }
 
     #[test]
@@ -263,7 +275,7 @@ mod tests {
     #[test]
     fn release_dirs_are_separate_for_standard_and_mono() {
         let (_dir, cache) = make_cache();
-        let std_dir  = cache.release_dir(&stable("4.3"));
+        let std_dir = cache.release_dir(&stable("4.3"));
         let mono_dir = cache.release_dir(&stable_mono("4.3"));
         assert_ne!(std_dir, mono_dir);
     }
@@ -273,11 +285,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: this is a single-threaded test binary so mutating the
         // environment here cannot race with other threads.
-        unsafe { std::env::set_var(crate::cache::CACHE_DIR_ENV_VAR, dir.path()); }
+        unsafe {
+            std::env::set_var(crate::envvars::CACHE_DIR_ENV_VAR, dir.path());
+        }
         let cache = GodotCache::from_env().unwrap();
         // from_env appends "godot" to the cache root.
         assert_eq!(cache.base, dir.path().join("godot"));
-        unsafe { std::env::remove_var(crate::cache::CACHE_DIR_ENV_VAR); }
+        unsafe {
+            std::env::remove_var(crate::envvars::CACHE_DIR_ENV_VAR);
+        }
     }
 
     #[test]
@@ -288,7 +304,13 @@ mod tests {
             flavor: "../bad".into(),
             mono: false,
         };
-        assert!(cache.remove(&bad).unwrap_err().to_string().contains("flavor"));
+        assert!(
+            cache
+                .remove(&bad)
+                .unwrap_err()
+                .to_string()
+                .contains("flavor")
+        );
     }
 
     #[test]
@@ -299,7 +321,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut buf);
-            writer.start_file::<_, ()>("../../evil.txt", Default::default()).unwrap();
+            writer
+                .start_file::<_, ()>("../../evil.txt", Default::default())
+                .unwrap();
             writer.write_all(b"pwned").unwrap();
             writer.finish().unwrap();
         }
@@ -344,15 +368,19 @@ mod tests {
     #[test]
     fn is_console_executable_detects_console_variant() {
         let console = PathBuf::from("Godot_v4.3-stable_win64_console.exe");
-        let normal  = PathBuf::from("Godot_v4.3-stable_win64.exe");
-        assert!( is_console_executable(&console));
+        let normal = PathBuf::from("Godot_v4.3-stable_win64.exe");
+        assert!(is_console_executable(&console));
         assert!(!is_console_executable(&normal));
     }
 
     #[test]
     fn is_godot_executable_recognises_platform_variants() {
-        assert!(is_godot_executable(&PathBuf::from("Godot_v4.3-stable_win64.exe")));
-        assert!(is_godot_executable(&PathBuf::from("Godot_v4.3-stable_linux.x86_64")));
+        assert!(is_godot_executable(&PathBuf::from(
+            "Godot_v4.3-stable_win64.exe"
+        )));
+        assert!(is_godot_executable(&PathBuf::from(
+            "Godot_v4.3-stable_linux.x86_64"
+        )));
         assert!(!is_godot_executable(&PathBuf::from("GodotSharp")));
         assert!(!is_godot_executable(&PathBuf::from("readme.txt")));
     }
@@ -361,7 +389,12 @@ mod tests {
     #[test]
     fn find_macos_app_executable_finds_standard_bundle() {
         let dir = tempfile::tempdir().unwrap();
-        let exe_path = dir.path().join("Godot.app").join("Contents").join("MacOS").join("Godot");
+        let exe_path = dir
+            .path()
+            .join("Godot.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Godot");
         std::fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
         std::fs::write(&exe_path, b"").unwrap();
 
@@ -373,7 +406,12 @@ mod tests {
     #[test]
     fn find_macos_app_executable_finds_mono_bundle() {
         let dir = tempfile::tempdir().unwrap();
-        let exe_path = dir.path().join("Godot_mono.app").join("Contents").join("MacOS").join("Godot");
+        let exe_path = dir
+            .path()
+            .join("Godot_mono.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Godot");
         std::fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
         std::fs::write(&exe_path, b"").unwrap();
 

@@ -17,8 +17,8 @@ use anyhow::{Context, Result};
 
 use crate::config::{Config, DepKind};
 use crate::dependency::cache::DependencyCache;
-use crate::dependency::lockfile::LockFile;
 use crate::dependency::ensure::ensure_dependency;
+use crate::dependency::lockfile::LockFile;
 use crate::utils::path_key;
 
 const METADATA_FILE: &str = ".ggg_dep_info.toml";
@@ -26,7 +26,8 @@ const METADATA_FILE: &str = ".ggg_dep_info.toml";
 pub fn run(name: &str, show_all: bool) -> Result<()> {
     let config = Config::load(Path::new("ggg.toml"))?;
 
-    let dep = config.get_dependency(name)
+    let dep = config
+        .get_dependency(name)
         .with_context(|| format!("dependency {:?} not found in ggg.toml", name))?;
 
     let mut lock = LockFile::load_or_empty(Path::new("ggg.lock"))?;
@@ -36,7 +37,8 @@ pub fn run(name: &str, show_all: bool) -> Result<()> {
         .with_context(|| format!("failed to resolve {:?}", name))?;
 
     lock.upsert(&resolved);
-    lock.save(Path::new("ggg.lock")).context("failed to write ggg.lock")?;
+    lock.save(Path::new("ggg.lock"))
+        .context("failed to write ggg.lock")?;
 
     let cache_dir = dep_cache.entry_path(&resolved);
 
@@ -47,10 +49,11 @@ pub fn run(name: &str, show_all: bool) -> Result<()> {
 
     // Header: "name  (rev -> sha[:8]...)" for git, "name  (sha[:8]...)" for archive.
     let version_note = match dep.kind() {
-        DepKind::Git { rev, .. }    => format!("{} -> {}...", rev, &resolved.sha[..8]),
-        DepKind::Archive { .. }     => format!("{}...", &resolved.sha[..8]),
+        DepKind::Git { rev, .. } => format!("{} -> {}...", rev, &resolved.sha[..8]),
+        DepKind::Archive { .. } => format!("{}...", &resolved.sha[..8]),
         DepKind::AssetLib { asset_id } => {
-            let version = resolved.asset_version
+            let version = resolved
+                .asset_version
                 .map(|v| format!("v{} ", v))
                 .unwrap_or_default();
             format!("asset #{asset_id} {version}-> {}...", &resolved.sha[..8])
@@ -78,8 +81,7 @@ fn collect_files(dir: &Path, prefix: &Path, out: &mut Vec<String>) -> Result<()>
     for entry in std::fs::read_dir(dir)
         .with_context(|| format!("failed to read directory {}", dir.display()))?
     {
-        let entry = entry
-            .with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
         let name = entry.file_name();
 
         if name == METADATA_FILE {
@@ -115,7 +117,10 @@ struct DirNode {
 
 impl DirNode {
     fn new() -> Self {
-        Self { files: Vec::new(), subdirs: BTreeMap::new() }
+        Self {
+            files: Vec::new(),
+            subdirs: BTreeMap::new(),
+        }
     }
 
     fn insert(&mut self, parts: &[&str]) {
@@ -148,11 +153,14 @@ fn print_node(node: &DirNode, depth: usize) {
     for (name, subdir) in &node.subdirs {
         let n = subdir.files.len();
         if n > 0 {
-            println!("{indent}{name}/  {} file{}", n, if n == 1 { "" } else { "s" });
+            println!(
+                "{indent}{name}/  {} file{}",
+                n,
+                if n == 1 { "" } else { "s" }
+            );
         } else {
             println!("{indent}{name}/");
         }
         print_node(subdir, depth + 1);
     }
-
 }

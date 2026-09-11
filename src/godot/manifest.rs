@@ -28,8 +28,15 @@ use serde::Deserialize;
 
 use super::release::GodotRelease;
 
-const VERSIONS_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/godotengine/godot-website/master/_data/versions.yml";
+/// The versions manifest URL, overridable via the `GGG_GODOT_MANIFEST_URL`
+/// environment variable ([`crate::envvars::GODOT_MANIFEST_URL_ENV_VAR`]) so
+/// tests can point at a local server.
+pub fn versions_manifest_url() -> String {
+    std::env::var(crate::envvars::GODOT_MANIFEST_URL_ENV_VAR).unwrap_or_else(|_| {
+        "https://raw.githubusercontent.com/godotengine/godot-website/master/_data/versions.yml"
+            .to_string()
+    })
+}
 
 // --- raw manifest types ----------------------------------------------------
 // These mirror the YAML structure directly. Fields we don't need are omitted;
@@ -57,7 +64,7 @@ struct ReleaseEntry {
 /// (from the top-level `flavor` field) plus all older pre-releases listed in
 /// `releases`.
 pub fn fetch_versions() -> Result<Vec<GodotRelease>> {
-    let yaml = reqwest::blocking::get(VERSIONS_MANIFEST_URL)
+    let yaml = reqwest::blocking::get(versions_manifest_url())
         .context("failed to fetch Godot versions manifest")?
         .text()
         .context("failed to read Godot versions manifest response")?;
@@ -80,11 +87,19 @@ pub fn parse_versions(yaml: &str) -> Result<Vec<GodotRelease>> {
         };
 
         // The top-level flavor is the latest release for this version series.
-        releases.push(GodotRelease { version: version.clone(), flavor: entry.flavor, mono: false });
+        releases.push(GodotRelease {
+            version: version.clone(),
+            flavor: entry.flavor,
+            mono: false,
+        });
 
         // The releases array contains older pre-release builds for this series.
         for release in entry.releases {
-            releases.push(GodotRelease { version: version.clone(), flavor: release.name, mono: false });
+            releases.push(GodotRelease {
+                version: version.clone(),
+                flavor: release.name,
+                mono: false,
+            });
         }
     }
 
@@ -97,6 +112,30 @@ pub fn parse_versions(yaml: &str) -> Result<Vec<GodotRelease>> {
 mod tests {
     use super::*;
     use crate::godot::release::GodotVersion;
+    use serial_test::serial;
+
+    const DEFAULT_URL: &str =
+        "https://raw.githubusercontent.com/godotengine/godot-website/master/_data/versions.yml";
+
+    #[test]
+    #[serial]
+    fn versions_manifest_url_override_wins() {
+        unsafe {
+            std::env::set_var(
+                crate::envvars::GODOT_MANIFEST_URL_ENV_VAR,
+                "http://localhost:8080/manifest",
+            )
+        };
+        assert_eq!(versions_manifest_url(), "http://localhost:8080/manifest");
+        unsafe { std::env::remove_var(crate::envvars::GODOT_MANIFEST_URL_ENV_VAR) };
+    }
+
+    #[test]
+    #[serial]
+    fn versions_manifest_url_default_when_unset() {
+        unsafe { std::env::remove_var(crate::envvars::GODOT_MANIFEST_URL_ENV_VAR) };
+        assert_eq!(versions_manifest_url(), DEFAULT_URL);
+    }
 
     const SAMPLE_MANIFEST: &str = r#"
 - name: "4.7"
@@ -135,8 +174,8 @@ mod tests {
     fn parse_preserves_newest_first_order() {
         let releases = parse_versions(SAMPLE_MANIFEST).unwrap();
         assert_eq!(releases[0].version, GodotVersion::new(4, 7, 0));
-        assert_eq!(releases[0].flavor,  "dev4");
-        assert_eq!(releases[1].flavor,  "dev3");
+        assert_eq!(releases[0].flavor, "dev4");
+        assert_eq!(releases[1].flavor, "dev3");
     }
 
     #[test]
