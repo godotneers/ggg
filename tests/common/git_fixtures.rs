@@ -19,11 +19,15 @@ use super::FileContent;
 /// when [`build`](BareRepoBuilder::build) is called.
 pub struct BareRepoBuilder {
     files: Vec<(String, FileContent)>,
+    submodules: Vec<(String, String)>,
 }
 
 impl BareRepoBuilder {
     fn new() -> Self {
-        Self { files: Vec::new() }
+        Self {
+            files: Vec::new(),
+            submodules: Vec::new(),
+        }
     }
 
     /// Add a file at `path` (relative to the repo root, forward or back
@@ -31,6 +35,22 @@ impl BareRepoBuilder {
     /// (`&[u8]`) via [`FileContent`].
     pub fn with(mut self, path: impl Into<String>, contents: impl Into<FileContent>) -> Self {
         self.files.push((path.into(), contents.into()));
+        self
+    }
+
+    /// Add a submodule at `path` pointing at `commit_sha`.
+    ///
+    /// The entry is written straight into the index with mode `160000` via
+    /// `git update-index --add --cacheinfo`; `commit_sha` is never validated
+    /// against the parent repository, so it may refer to a commit that only
+    /// exists in the (absent) submodule repository - exactly how a real
+    /// submodule looks from the superproject's tree.
+    pub fn with_submodule(
+        mut self,
+        path: impl Into<String>,
+        commit_sha: impl Into<String>,
+    ) -> Self {
+        self.submodules.push((path.into(), commit_sha.into()));
         self
     }
 
@@ -57,6 +77,10 @@ impl BareRepoBuilder {
             std::fs::write(&abs, contents.as_bytes()).unwrap();
         }
         run_git(wt, &["add", "-A"]);
+        for (path, sha) in &self.submodules {
+            let info = format!("160000,{},{}", sha, path);
+            run_git(wt, &["update-index", "--add", "--cacheinfo", &info]);
+        }
         run_git(
             wt,
             &[

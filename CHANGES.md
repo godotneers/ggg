@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Git dependencies whose repository contains submodules now install correctly instead of failing with `failed to find blob ...`. Submodule paths are skipped, matching `git archive` / GitHub tarball semantics. ([#3](https://github.com/godotneers/ggg/issues/3))
+
 ## [0.4.0] - 2026-06-03
 
 ### Added

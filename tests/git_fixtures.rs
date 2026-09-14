@@ -67,3 +67,37 @@ fn sync_resolves_tag_rev() {
     assert!(lock_str.contains("rev = \"v1.0.0\""));
     assert!(lock_str.contains(&format!("sha = \"{}\"", repo.sha())));
 }
+
+/// A git dependency whose repository contains a submodule entry installs
+/// successfully, matching `git archive` semantics: the submodule's commit is
+/// never fetched from the superproject, so it produces no file and no
+/// directory in the installed output.
+#[test]
+fn sync_succeeds_with_submodule_entry() {
+    let repo = BareRepo::builder()
+        .with("addon/plugin.gd", "# addon file")
+        // A submodule whose commit OID exists only in the (absent) submodule
+        // repository - the failure mode from the bug report, where extraction
+        // tried to look the OID up in the parent and hit "failed to find blob".
+        .with_submodule("addon/native/godot-cpp", "a".repeat(40))
+        .build();
+
+    let project = TestProject::new();
+    project
+        .config()
+        .git("my-addon", repo.file_url(), "main")
+        .write();
+
+    project
+        .cmd()
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(contains("my-addon"));
+
+    // The real file is installed...
+    assert_eq!(project.read("addon/plugin.gd"), "# addon file");
+
+    // ...and the submodule path produces neither a file nor a directory.
+    assert!(!project.exists("addon/native"));
+}

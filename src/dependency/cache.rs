@@ -324,12 +324,7 @@ fn extract_tree(dep: &ResolvedDependency, repo_path: &Path, dest: &Path) -> Resu
 
     for entry in index.entries() {
         // Skip non-blob entries (submodules, sparse directories).
-        if !entry.mode.contains(gix::index::entry::Mode::FILE)
-            && !entry
-                .mode
-                .contains(gix::index::entry::Mode::FILE_EXECUTABLE)
-            && !entry.mode.contains(gix::index::entry::Mode::SYMLINK)
-        {
+        if !is_materializable(entry.mode) {
             continue;
         }
 
@@ -362,6 +357,23 @@ fn extract_tree(dep: &ResolvedDependency, repo_path: &Path, dest: &Path) -> Resu
     }
 
     Ok(())
+}
+
+/// Returns `true` if an index entry with `mode` should be written to disk.
+///
+/// Only regular files (plain and executable) and symlinks are materialized.
+/// Submodules (gitlink entries, `Mode::COMMIT`) and sparse directories are
+/// skipped: their object IDs do not resolve to blobs in the parent repository.
+///
+/// gix's `Mode` is a bitflags type whose constants are raw git modes, so
+/// `contains()` cannot be used here - `Mode::COMMIT` (`0o160000`) shares its
+/// type bits with `Mode::SYMLINK` (`0o120000`), making
+/// `COMMIT.contains(SYMLINK)` true. Equality against the exact modes is the
+/// correct check.
+fn is_materializable(mode: gix::index::entry::Mode) -> bool {
+    mode == gix::index::entry::Mode::FILE
+        || mode == gix::index::entry::Mode::FILE_EXECUTABLE
+        || mode == gix::index::entry::Mode::SYMLINK
 }
 
 /// Read a blob from the repository and write it to `dest_root/<path>`.
@@ -510,6 +522,33 @@ mod tests {
         let h = url_hash("example.com/foo/bar");
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // --- mode classification ------------------------------------------------
+
+    #[test]
+    fn is_materializable_accepts_blobs_and_symlinks() {
+        use gix::index::entry::Mode;
+        assert!(is_materializable(Mode::FILE));
+        assert!(is_materializable(Mode::FILE_EXECUTABLE));
+        assert!(is_materializable(Mode::SYMLINK));
+    }
+
+    #[test]
+    fn is_materializable_rejects_submodules_and_directories() {
+        use gix::index::entry::Mode;
+        assert!(!is_materializable(Mode::COMMIT));
+        assert!(!is_materializable(Mode::DIR));
+    }
+
+    #[test]
+    fn mode_commit_shares_bits_with_symlink() {
+        // Regression: the old filter used `contains()`, and COMMIT overlaps
+        // SYMLINK, so submodules were misclassified as materializable.
+        use gix::index::entry::Mode;
+        assert!(Mode::COMMIT.contains(Mode::SYMLINK));
+        assert!(!Mode::COMMIT.contains(Mode::FILE));
+        assert!(!Mode::COMMIT.contains(Mode::FILE_EXECUTABLE));
     }
 
     // --- contains -----------------------------------------------------------
