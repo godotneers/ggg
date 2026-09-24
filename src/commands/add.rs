@@ -450,6 +450,19 @@ fn parse_url_rev(s: &str) -> (String, Option<String>) {
     (s.to_owned(), None)
 }
 
+/// Lowercase `s`, replace non-alphanumeric characters with hyphens, and
+/// collapse runs of hyphens into a single separator.
+fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|seg| !seg.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// Derive a dependency name from a Godot Asset Library asset title.
 ///
 /// Takes everything before the first  " - " separator (if any), lowercases it,
@@ -459,14 +472,7 @@ fn parse_url_rev(s: &str) -> (String, Option<String>) {
 ///           "Phantom Camera" -> "phantom-camera"
 fn infer_name_from_asset(title: &str) -> String {
     let base = title.split(" - ").next().unwrap_or(title);
-    base.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    slugify(base)
 }
 
 /// Derive a dependency name from a git URL.
@@ -480,7 +486,7 @@ fn infer_name_from_git(url: &str) -> String {
 }
 
 /// Derive a dependency name from an archive URL's filename, normalising it the
-/// same way [`infer_name_from_asset`] does with titles.
+/// same way [`slugify`] does with titles.
 ///
 /// Examples: "https://x.example.com/debug_draw_3d.zip" -> "debug-draw-3d"
 ///           "https://x.example.com/addon.tar.gz"       -> "addon"
@@ -502,14 +508,7 @@ fn infer_name_from_archive_url(url: &str) -> String {
         .or_else(|| filename.strip_suffix(".tgz"))
         .or_else(|| filename.strip_suffix(".zip"))
         .unwrap_or(filename);
-    stem.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    slugify(stem)
 }
 
 /// Whether `s` looks like an Asset Store reference of the form
