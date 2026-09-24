@@ -33,6 +33,19 @@ GGG_GODOT_DATA_DIR=/tmp/godot-data ggg sync
 
 Useful for integration tests and CI environments where writing to the real Godot data directory is undesirable.
 
+## `GGG_GODOT_EXECUTABLE`
+
+Points ggg at a pre-installed Godot executable instead of the managed one. Honoured by `ggg run`, `ggg edit`, and `ggg sync`; when set, no Godot engine is downloaded or cached and the Godot version declared in `ggg.toml` is not managed.
+
+```bash
+export GGG_GODOT_EXECUTABLE=/opt/godot/godot
+ggg sync
+```
+
+The path must exist and be a regular file, otherwise the command fails with an error naming the variable. `ggg run`, `ggg edit`, and `ggg sync` also accept a `--godot <path>` flag; the flag takes precedence over this variable.
+
+Useful for distributions and toolchains where Godot is installed through a system package manager and you do not want ggg to manage a second copy.
+
 ## Endpoint overrides
 
 Each of the hardcoded remote endpoints ggg talks to (Godot versions manifest, engine builds API, asset library API, asset store API, export template downloads) can be overridden with an environment variable. This is primarily intended for testing and for mirroring the endpoints, letting you point ggg at a local or proxied server without code changes.

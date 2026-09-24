@@ -26,6 +26,9 @@ enum Command {
 
     /// Resolve and install all dependencies, download Godot if needed
     Sync {
+        /// Use this Godot executable instead of the managed one
+        #[arg(long)]
+        godot: Option<String>,
         /// Show what would be installed without writing any files
         #[arg(long)]
         dry_run: bool,
@@ -42,6 +45,9 @@ enum Command {
     /// All arguments after `edit` are forwarded verbatim to Godot.
     /// ggg-level flags must come before the subcommand.
     Edit {
+        /// Use this Godot executable instead of the managed one
+        #[arg(long)]
+        godot: Option<String>,
         /// Download and install export templates alongside the Godot version
         #[arg(long)]
         with_export_templates: bool,
@@ -55,6 +61,9 @@ enum Command {
     /// All arguments after `run` are forwarded verbatim to Godot.
     /// ggg-level flags must come before the subcommand.
     Run {
+        /// Use this Godot executable instead of the managed one
+        #[arg(long)]
+        godot: Option<String>,
         /// Download and install export templates alongside the Godot version
         #[arg(long)]
         with_export_templates: bool,
@@ -201,18 +210,21 @@ fn main() -> Result<()> {
             with_export_templates,
         } => commands::init::run(with_export_templates),
         Command::Sync {
+            godot,
             dry_run,
             force,
             with_export_templates,
-        } => commands::sync::run(dry_run, force, with_export_templates),
+        } => commands::sync::run(dry_run, force, with_export_templates, godot),
         Command::Edit {
+            godot,
             with_export_templates,
             args,
-        } => commands::edit::run(&args, with_export_templates),
+        } => commands::edit::run(&args, with_export_templates, godot),
         Command::Run {
+            godot,
             with_export_templates,
             args,
-        } => commands::run::run(&args, with_export_templates),
+        } => commands::run::run(&args, with_export_templates, godot),
         Command::Add(AddArgs {
             type_or_input,
             input,

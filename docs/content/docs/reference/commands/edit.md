@@ -4,10 +4,10 @@ weight = 5
 +++
 
 ```
-ggg edit [--with-export-templates] [<godot-args>...]
+ggg edit [--with-export-templates] [--godot <path>] [<godot-args>...]
 ```
 
-Opens the current project in the Godot editor using the version declared in `ggg.toml`. If that version is not yet cached, it is downloaded first.
+Opens the current project in the Godot editor using the version declared in `ggg.toml`. If that version is not yet cached, it is downloaded first. A different executable can be supplied with `--godot` or `GGG_GODOT_EXECUTABLE` instead.
 
 This is the standard way to open a project managed by Godot Goodie Grabber. Using `ggg edit` instead of launching Godot directly ensures you are always using the exact version the project requires.
 
@@ -33,10 +33,12 @@ ggg edit --with-export-templates --verbose
 
 If `export_templates = true` is set in `ggg.toml`, templates are always ensured without needing this flag.
 
+**`--godot <path>`:** use the Godot executable at `<path>` instead of the managed version declared in `ggg.toml`. No engine is downloaded or cached. The path must exist and be a regular file, otherwise `ggg edit` fails with an error naming the flag. When this flag is set it takes precedence over the `GGG_GODOT_EXECUTABLE` environment variable.
+
 ## Notes
 
 - Requires a `ggg.toml` in the current directory.
-- Downloads and caches the declared Godot version on first run. Subsequent runs start immediately from the cache.
+- Downloads and caches the declared Godot version on first run. Subsequent runs start immediately from the cache. (Without a `--godot` flag or `GGG_GODOT_EXECUTABLE` override.)
 - The Godot binary is shared across all your projects in a single cache directory. See the [cache reference](@/docs/reference/cache.md) for the cache location and how to manage it.
 - `ggg edit` does not run `ggg sync` first. If you have just added or updated dependencies, run [`ggg sync`](@/docs/reference/commands/sync.md) before opening the editor.
 

@@ -233,6 +233,47 @@ impl TestProject {
     }
 }
 
+/// The path to a compiled no-op executable that exits with status 0 and
+/// ignores every argument it is given.
+///
+/// Used as a stand-in for a user-supplied Godot binary in override tests: it
+/// must be a real native executable so launch semantics match production (a
+/// shell script or `.cmd` file would go through a different spawn path on
+/// Windows). The binary is compiled once per test process with `rustc` from a
+/// tiny `fn main() {}` source, so it is hermetic, cross-platform, and ships
+/// nothing in release artifacts.
+///
+/// The artifact is written into `CARGO_TARGET_TMPDIR` (a per-test-crate
+/// directory under `target/debug/tmp/`), so `cargo clean` removes it along
+/// with the rest of the build output.
+pub fn noop_executable() -> std::path::PathBuf {
+    static NOOP: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    NOOP.get_or_init(|| {
+        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        let src = dir.join("noop.rs");
+        let exe = dir.join(if cfg!(target_os = "windows") {
+            "noop.exe"
+        } else {
+            "noop"
+        });
+        std::fs::write(&src, "fn main() {}\n").unwrap();
+        let status = std::process::Command::new("rustc")
+            .arg("-C")
+            .arg("opt-level=0")
+            .arg("-o")
+            .arg(&exe)
+            .arg(&src)
+            .status()
+            .expect("failed to run rustc (is the toolchain on PATH?)");
+        assert!(
+            status.success(),
+            "rustc failed to compile the no-op executable"
+        );
+        exe
+    })
+    .clone()
+}
+
 /// A fluent builder for `ggg.toml` fixtures.
 ///
 /// The builder is pre-populated from the existing `ggg.toml` (if any) so that

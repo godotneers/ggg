@@ -32,5 +32,13 @@ pub const GODOT_DOWNLOADS_BASE_URL_ENV_VAR: &str = "GGG_GODOT_DOWNLOADS_BASE_URL
 /// ([`crate::godot::export_templates`]).
 pub const GODOT_DATA_DIR_ENV_VAR: &str = "GGG_GODOT_DATA_DIR";
 
+/// Overrides the Godot executable used by `ggg run`, `ggg edit`, and
+/// `ggg sync` ([`crate::godot::engine::resolve`]).
+///
+/// When set, ggg does not download or manage the pinned release; the path is
+/// used as-is. Takes precedence over the managed default but loses to the
+/// `--godot` CLI flag.
+pub const GODOT_EXECUTABLE_ENV_VAR: &str = "GGG_GODOT_EXECUTABLE";
+
 /// When set (to any value), suppresses coloured output from `ggg diff`.
 pub const NO_COLOR_ENV_VAR: &str = "NO_COLOR";

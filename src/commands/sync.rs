@@ -9,11 +9,11 @@
 //!
 //! # Flow
 //!
-//! 1. **Plan phase** - [`crate::dependency::sync::plan`] resolves and downloads
+//! 1. **Plan phase** - [`sync::plan`] resolves and downloads
 //!    all dependencies and computes what would change, without writing anything.
 //! 2. **Check** - if any plan has conflicts, or if `--dry-run` was given,
 //!    print a summary of what would happen (and any conflicts) and stop.
-//! 3. **Execute phase** - [`crate::dependency::sync::execute`] writes files and
+//! 3. **Execute phase** - [`sync::execute`] writes files and
 //!    removes stale entries, then `ggg.lock` and `.ggg.state` are persisted.
 
 use std::collections::HashSet;
@@ -32,7 +32,12 @@ use crate::godot::export_templates;
 
 use super::init::ensure_gitignore_entry;
 
-pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()> {
+pub fn run(
+    dry_run: bool,
+    force: bool,
+    with_export_templates: bool,
+    godot: Option<String>,
+) -> Result<()> {
     let project_root = std::env::current_dir().context("failed to determine current directory")?;
 
     let config = Config::load(Path::new("ggg.toml"))?;
@@ -41,7 +46,14 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
     let (old_state, state_present) = LocalState::load_or_empty(&state_path)?;
 
     let godot_cache = GodotCache::from_env()?;
-    engine::ensure(&config.project.godot, &godot_cache)?;
+
+    // `ggg sync` honours both the `--godot` flag and GGG_GODOT_EXECUTABLE:
+    // with an override set, the engine is not managed/downloaded at all.
+    engine::resolve(
+        &config.project.godot,
+        &godot_cache,
+        godot.as_deref().map(Path::new),
+    )?;
 
     if with_export_templates || config.project.export_templates {
         export_templates::ensure_export_templates(&config.project.godot)?;

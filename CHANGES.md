@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Store assets can be found by keyword from `ggg add` and `ggg search --source asset-store`.
 - `ggg add` of an archive now infers the dependency name from the URL's filename (`debug_draw_3d.zip` -> `debug-draw-3d`), so `--name` is optional.
 - `ggg update` now also updates Godot Asset Store dependencies, bumping the pinned release in `ggg.toml` to the newest stable version compatible with your Godot version (`--dry-run` previews).
+- `ggg run`, `ggg edit`, and `ggg sync` accept a `--godot <path>` flag, and honour the `GGG_GODOT_EXECUTABLE` environment variable, to use a pre-installed Godot executable instead of the managed download. The override is validated (must be an existing regular file) and no engine is downloaded or cached when it is set. `--godot` takes precedence over the environment variable. ([#2](https://github.com/godotneers/ggg/issues/2))
 
 ### Changed
 - The Godot Asset Library field in `ggg.toml` is renamed from `asset_id` to `asset_library_id`; old `asset_id` configs still load and are rewritten on the next save.

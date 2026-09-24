@@ -4,10 +4,10 @@ weight = 6
 +++
 
 ```
-ggg run [--with-export-templates] [<godot-args>...]
+ggg run [--with-export-templates] [--godot <path>] [<godot-args>...]
 ```
 
-Runs the current project using the Godot version declared in `ggg.toml`. If that version is not yet cached, it is downloaded first.
+Runs the current project using the Godot version declared in `ggg.toml`. If that version is not yet cached, it is downloaded first. A different executable can be supplied with `--godot` or `GGG_GODOT_EXECUTABLE` instead.
 
 Unlike [`ggg edit`](@/docs/reference/commands/edit.md), this launches Godot in game mode rather than opening the editor. Use it to run your project from the terminal, for example in a CI environment or to quickly test without opening the full editor.
 
@@ -31,10 +31,12 @@ ggg run --with-export-templates --headless
 
 If `export_templates = true` is set in `ggg.toml`, templates are always ensured without needing this flag.
 
+**`--godot <path>`:** use the Godot executable at `<path>` instead of the managed version declared in `ggg.toml`. No engine is downloaded or cached. The path must exist and be a regular file, otherwise `ggg run` fails with an error naming the flag. When this flag is set it takes precedence over the `GGG_GODOT_EXECUTABLE` environment variable.
+
 ## Notes
 
 - Requires a `ggg.toml` in the current directory.
-- Downloads and caches the declared Godot version on first run. Subsequent runs start immediately from the cache.
+- Downloads and caches the declared Godot version on first run. Subsequent runs start immediately from the cache. (Without a `--godot` flag or `GGG_GODOT_EXECUTABLE` override.)
 - Does not run `ggg sync` first. If you have just added or updated dependencies, run [`ggg sync`](@/docs/reference/commands/sync.md) beforehand.
 
 ## See also

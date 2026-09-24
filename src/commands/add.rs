@@ -1039,7 +1039,7 @@ mod tests {
     fn hit_display_prefixes_source() {
         let store = SearchResult::Store(StoreAsset {
             slug: "godot-xoshiro256-plus-plus".into(),
-            publisher: crate::godot::asset_store::StorePublisher {
+            publisher: asset_store::StorePublisher {
                 slug: "souleat".into(),
                 name: "souleat".into(),
             },
