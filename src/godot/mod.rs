@@ -2,6 +2,7 @@
 //! engine binaries.
 
 pub mod asset_lib;
+pub mod asset_store;
 pub mod cache;
 pub mod download;
 pub mod engine;

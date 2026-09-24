@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use common::TestProject;
 use common::archive::zip_bytes;
 use common::git_fixtures::BareRepo;
-use common::wiremock::{AssetDetailBody, MockApi};
+use common::wiremock::{AssetDetailBody, MockApi, StoreArchive};
 
 // ---------------------------------------------------------------------------
 // AC #1: fails with 'no ggg.toml found' when no config exists
@@ -227,7 +227,7 @@ async fn ls_dep_asset_header_shows_id_version_and_sha() {
 
     let mut project = TestProject::new();
     project.env_api(&api);
-    project.config().asset("my-asset", 1586).write();
+    project.config().asset_lib("my-asset", 1586).write();
 
     project.cmd().arg("sync").assert().success();
 
@@ -238,6 +238,47 @@ async fn ls_dep_asset_header_shows_id_version_and_sha() {
         .success()
         .stdout(contains(format!(
             "my-asset  (asset #1586 v3 -> {}...)",
+            &sha[..8]
+        )));
+}
+
+// ---------------------------------------------------------------------------
+// Asset Store dependency: header format
+// ---------------------------------------------------------------------------
+
+/// Store deps list the cache contents too; their header is
+/// `publisher/asset v<version> -> <sha[:8]>...`.
+#[tokio::test]
+async fn ls_dep_store_header_shows_publisher_asset_version() {
+    let zipped = zip_bytes(&[("addon/addon-file.txt", "addon content")]);
+    let sha = format!("{:x}", Sha256::digest(&zipped));
+
+    let api = MockApi::start().await;
+    // Mounting the releases endpoint with the attached archive lets ggg resolve
+    // the pinned version and download the zip in the same sync run.
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[StoreArchive::new(2, "1.2.3", true, "4.0", None, zipped)],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project.env_store_api(&api);
+    project
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:1.2.3")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+
+    project
+        .cmd()
+        .args(["ls-dep", "my-addon", "--all"])
+        .assert()
+        .success()
+        .stdout(contains(format!(
+            "my-addon  (souleat/photon-torpedo v1.2.3 -> {}...)",
             &sha[..8]
         )));
 }

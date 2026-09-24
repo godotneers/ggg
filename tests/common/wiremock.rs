@@ -193,6 +193,114 @@ pub struct GodotReleaseBody {
     pub assets: Vec<ReleaseAsset>,
 }
 
+/// Publisher metadata embedded in an Asset Store asset response.
+#[derive(Debug, Serialize)]
+pub struct StorePublisherBody {
+    pub slug: String,
+    pub name: String,
+}
+
+/// One Asset Store asset, serialised as the subset of `AssetData` ggg reads.
+#[derive(Debug, Serialize)]
+pub struct StoreAssetSummary {
+    pub slug: String,
+    pub publisher: StorePublisherBody,
+    pub name: String,
+    pub license_type: String,
+    pub store_url: String,
+}
+
+impl StoreAssetSummary {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        slug: impl Into<String>,
+        publisher_name: impl Into<String>,
+        publisher_slug: impl Into<String>,
+        name: impl Into<String>,
+        license_type: impl Into<String>,
+        store_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            slug: slug.into(),
+            publisher: StorePublisherBody {
+                name: publisher_name.into(),
+                slug: publisher_slug.into(),
+            },
+            name: name.into(),
+            license_type: license_type.into(),
+            store_url: store_url.into(),
+        }
+    }
+}
+
+/// One entry in a search page's `hits` array.
+#[derive(Debug, Serialize)]
+pub struct StoreSearchHit {
+    pub asset: StoreAssetSummary,
+}
+
+/// A search response for `GET /api/v1/search/query/`.
+///
+/// `count` is serialised as a decimal JSON string, matching how the API
+/// returns the total match count (`"427"` instead of `427`). `scroll` is the
+/// pagination token the API always emits; ggg reads `count`/`hits` and ignores
+/// the token for now.
+#[derive(Debug, Serialize)]
+pub struct StoreSearchBody {
+    #[serde(serialize_with = "serialize_u32_as_string")]
+    pub count: u32,
+    pub hits: Vec<StoreSearchHit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<String>,
+}
+
+impl StoreSearchBody {
+    pub fn new(count: u32, asset: StoreAssetSummary) -> Self {
+        Self {
+            count,
+            hits: vec![StoreSearchHit { asset }],
+            scroll: None,
+        }
+    }
+
+    pub fn with_scroll(mut self, scroll: Option<String>) -> Self {
+        self.scroll = scroll;
+        self
+    }
+}
+
+/// One Asset Store release, serialised as the subset of `ReleaseData` ggg reads.
+#[derive(Debug, Serialize)]
+pub struct StoreRelease {
+    pub id: u64,
+    pub version: String,
+    pub stable: bool,
+    pub download_url: String,
+    pub min_godot_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_godot_version: Option<String>,
+}
+
+impl StoreRelease {
+    pub fn new(
+        id: u64,
+        version: impl Into<String>,
+        stable: bool,
+        download_url: impl Into<String>,
+        min_godot_version: impl Into<String>,
+        max_godot_version: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            version: version.into(),
+            stable,
+            download_url: download_url.into(),
+            min_godot_version: min_godot_version.into(),
+            max_godot_version,
+        }
+    }
+}
+
 /// A running, hermetic fake of Godot's remote services backed by wiremock.
 ///
 /// The server is bound to an ephemeral port on `127.0.0.1`. Tests point ggg at
@@ -280,6 +388,98 @@ impl MockApi {
         Mock::given(method("GET"))
             .and(path(format!("/asset/{id}")))
             .respond_with(ResponseTemplate::new(200).set_body_string(detail))
+            .mount(&self.server)
+            .await;
+
+        self
+    }
+
+    /// Mount a stub for the Asset Store search endpoint
+    /// (`/search/query/`, relative to the Asset Store API root).
+    ///
+    /// The response is serialised from `body`, with any `{base}` placeholder
+    /// replaced by the live server port at runtime. Returns a reference to
+    /// `self` for chaining.
+    pub async fn mount_store_search(&self, body: &StoreSearchBody) -> &Self {
+        let search = serde_json::to_string(body).expect("store search body is serializable");
+        let search = search.replace("{base}", &self.server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/search/query/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(search))
+            .mount(&self.server)
+            .await;
+
+        self
+    }
+
+    /// Mount the Asset Store releases endpoint for `publisher`/`slug` and
+    /// serve each release's archive at its own route, wiring `download_url`
+    /// back to that route so URLs and archives never drift apart.
+    ///
+    /// Returns a reference to `self` for chaining.
+    pub async fn mount_store_releases_with_archives(
+        &self,
+        publisher: &str,
+        slug: &str,
+        releases: &[StoreArchive],
+    ) -> &Self {
+        let mut bodies = Vec::new();
+        for archive in releases {
+            let route = format!("/files/store-{publisher}-{slug}-{}.zip", archive.id);
+            self.mount_file(&route, archive.bytes.clone()).await;
+            bodies.push(StoreRelease::new(
+                archive.id,
+                &archive.version,
+                archive.stable,
+                format!("{}{route}", self.server.uri()),
+                &archive.min_godot_version,
+                archive.max_godot_version.clone(),
+            ));
+        }
+        self.mount_store_releases(publisher, slug, &bodies).await
+    }
+
+    /// Mount a stub for the Asset Store asset detail endpoint
+    /// (`/assets/{publisher}/{slug}/`, relative to the Asset Store API root).
+    ///
+    /// The stub only answers for the given `publisher`/`slug` pair. Returns a
+    /// reference to `self` for chaining.
+    pub async fn mount_store_asset(
+        &self,
+        publisher: &str,
+        slug: &str,
+        body: &StoreAssetSummary,
+    ) -> &Self {
+        let detail = serde_json::to_string(body).expect("store asset body is serializable");
+        let detail = detail.replace("{base}", &self.server.uri());
+
+        Mock::given(method("GET"))
+            .and(path(format!("/assets/{publisher}/{slug}/")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(detail))
+            .mount(&self.server)
+            .await;
+
+        self
+    }
+
+    /// Mount a stub for the Asset Store releases endpoint
+    /// (`/releases/{publisher}/{slug}/`, relative to the Asset Store API root).
+    ///
+    /// The stub only answers for the given `publisher`/`slug` pair. Returns a
+    /// reference to `self` for chaining.
+    pub async fn mount_store_releases(
+        &self,
+        publisher: &str,
+        slug: &str,
+        releases: &[StoreRelease],
+    ) -> &Self {
+        let body = serde_json::to_string(releases).expect("store releases body is serializable");
+        let body = body.replace("{base}", &self.server.uri());
+
+        Mock::given(method("GET"))
+            .and(path(format!("/releases/{publisher}/{slug}/")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
             .mount(&self.server)
             .await;
 
@@ -381,5 +581,36 @@ impl MockApi {
     /// `url::Url`, so `query_pairs()` gives the raw query parameters.
     pub async fn received_requests(&self) -> Vec<wiremock::Request> {
         self.server.received_requests().await.unwrap_or_default()
+    }
+}
+
+/// One Asset Store release to mount with its archive bytes, for
+/// [`MockApi::mount_store_releases_with_archives`].
+pub struct StoreArchive {
+    pub id: u64,
+    pub version: String,
+    pub stable: bool,
+    pub min_godot_version: String,
+    pub max_godot_version: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+impl StoreArchive {
+    pub fn new(
+        id: u64,
+        version: impl Into<String>,
+        stable: bool,
+        min_godot_version: impl Into<String>,
+        max_godot_version: Option<String>,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            id,
+            version: version.into(),
+            stable,
+            min_godot_version: min_godot_version.into(),
+            max_godot_version,
+            bytes,
+        }
     }
 }

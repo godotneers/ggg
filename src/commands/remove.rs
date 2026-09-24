@@ -28,7 +28,7 @@ pub fn run(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Config, Dependency, Project};
+    use crate::config::{Config, Dependency, Project, Source};
     use std::path::Path;
 
     fn write_config(path: &Path, deps: &[(&str, &str, &str)]) {
@@ -40,7 +40,17 @@ mod tests {
             sync: None,
             dependency: deps
                 .iter()
-                .map(|(name, git, rev)| Dependency::new_git(*name, *git, *rev))
+                .map(|(name, git, rev)| {
+                    Dependency::new(
+                        *name,
+                        Source::Git {
+                            git: (*git).to_owned(),
+                            rev: (*rev).to_owned(),
+                        },
+                        None,
+                        None,
+                    )
+                })
                 .collect(),
         };
         config.save(path).unwrap();

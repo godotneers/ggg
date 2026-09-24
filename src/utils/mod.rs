@@ -1,4 +1,7 @@
 pub mod archive;
+pub mod de;
+pub mod output;
+pub mod validation;
 
 use std::path::Path;
 

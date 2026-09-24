@@ -23,7 +23,7 @@ use common::TestProject;
 use common::archive::zip_bytes;
 use common::archive::{fake_godot_asset, fake_template_tpz};
 use common::git_fixtures::BareRepo;
-use common::wiremock::{AssetDetailBody, MockApi};
+use common::wiremock::{AssetDetailBody, MockApi, StoreArchive};
 use ggg::godot::release::GodotRelease;
 
 // ---------------------------------------------------------------------------
@@ -365,9 +365,17 @@ async fn sync_installs_archive_dependency() {
     assert!(project.exists("ggg.lock"));
 
     // ...and the lock file records the archive source URL.
-    let lock = project.read("ggg.lock");
-    assert!(lock.contains("name = \"my-archive\""));
-    assert!(lock.contains("url = \""));
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-archive")
+        .expect("sync should record an entry for my-archive");
+    assert!(
+        entry.url.is_some(),
+        "archive dep should lock its source url"
+    );
+    assert_eq!(entry.kind(), Some(ggg::config::SourceKind::Archive));
 }
 
 #[tokio::test]
@@ -476,7 +484,11 @@ async fn sync_asset_lib_installs() {
     mount_asset(&api, 42, &[("addon/addon-file.txt", "addon content")]).await;
 
     let mut project = TestProject::new();
-    project.env_api(&api).config().asset("my-addon", 42).write();
+    project
+        .env_api(&api)
+        .config()
+        .asset_lib("my-addon", 42)
+        .write();
 
     project
         .cmd()
@@ -488,10 +500,14 @@ async fn sync_asset_lib_installs() {
     assert_eq!(project.read("addon-file.txt"), "addon content");
     assert!(project.exists("ggg.lock"));
 
-    let lock = project.read("ggg.lock");
-    assert!(lock.contains("name = \"my-addon\""));
-    assert!(lock.contains("asset_id = 42"));
-    assert!(lock.contains("asset_version"));
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    assert_eq!(entry.asset_library_id, Some(42));
+    assert!(entry.asset_version.is_some());
 }
 
 #[tokio::test]
@@ -502,7 +518,11 @@ async fn sync_asset_lib_modified_owned_blocks_then_force_overwrites() {
     mount_asset(&api, 42, &[("addon/addon-file.txt", "addon content")]).await;
 
     let mut project = TestProject::new();
-    project.env_api(&api).config().asset("my-addon", 42).write();
+    project
+        .env_api(&api)
+        .config()
+        .asset_lib("my-addon", 42)
+        .write();
 
     project.cmd().arg("sync").assert().success();
     project.write("addon-file.txt", "# user change");
@@ -530,13 +550,21 @@ async fn sync_asset_lib_remap_removes_stale_files() {
     mount_asset(&api, 43, &[("b/b-file.txt", "# from 43")]).await;
 
     let mut project = TestProject::new();
-    project.env_api(&api).config().asset("my-addon", 42).write();
+    project
+        .env_api(&api)
+        .config()
+        .asset_lib("my-addon", 42)
+        .write();
 
     project.cmd().arg("sync").assert().success();
     assert_eq!(project.read("a-file.txt"), "# from 42");
 
     // Repoint the same dep at a different asset id.
-    project.env_api(&api).config().asset("my-addon", 43).write();
+    project
+        .env_api(&api)
+        .config()
+        .asset_lib("my-addon", 43)
+        .write();
 
     project.cmd().arg("sync").assert().success();
 
@@ -545,6 +573,256 @@ async fn sync_asset_lib_remap_removes_stale_files() {
     assert!(
         !project.exists("a-file.txt"),
         "stale file should be removed after asset id remap"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Asset Store dependencies
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sync_store_installs() {
+    // A store dependency resolves the pinned version against the releases
+    // endpoint, downloads the reported zip, and installs (strip 1) like an
+    // asset-lib dep, recording publisher/asset/release identity + url + sha in
+    // the lock file.
+    let api = MockApi::start().await;
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[
+            StoreArchive::new(
+                1,
+                "0.9.0",
+                false,
+                "4.0",
+                None,
+                zip_bytes(&[("old/addon.txt", "# old")]),
+            ),
+            StoreArchive::new(
+                2,
+                "1.0.0",
+                true,
+                "4.0",
+                None,
+                zip_bytes(&[("addon/addon-file.txt", "addon content")]),
+            ),
+        ],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project
+        .env_store_api(&api)
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:1.0.0")
+        .write();
+
+    project
+        .cmd()
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(contains("my-addon"));
+
+    assert_eq!(project.read("addon-file.txt"), "addon content");
+    assert!(project.exists("ggg.lock"));
+
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    assert_eq!(entry.publisher_slug.as_deref(), Some("souleat"));
+    assert_eq!(entry.asset_slug.as_deref(), Some("photon-torpedo"));
+    assert_eq!(entry.release_id, Some(2));
+    assert_eq!(entry.release_version.as_deref(), Some("1.0.0"));
+    assert!(entry.url.is_some());
+    assert!(entry.archive_sha.is_some());
+}
+
+#[tokio::test]
+async fn sync_store_duplicate_version_picks_larger_release_id() {
+    // The pinned version resolves by version string; when several releases
+    // share the string the larger release id is the "real" latest and wins.
+    let api = MockApi::start().await;
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[
+            StoreArchive::new(
+                10,
+                "1.1.0",
+                true,
+                "4.0",
+                None,
+                zip_bytes(&[("addon/from-10.txt", "# id 10")]),
+            ),
+            StoreArchive::new(
+                7,
+                "1.1.0",
+                true,
+                "4.0",
+                None,
+                zip_bytes(&[("addon/from-7.txt", "# id 7")]),
+            ),
+        ],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project
+        .env_store_api(&api)
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:1.1.0")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+
+    assert_eq!(project.read("from-10.txt"), "# id 10");
+    assert!(!project.exists("from-7.txt"));
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    assert_eq!(entry.release_id, Some(10));
+}
+
+#[tokio::test]
+async fn sync_store_incompatible_pinned_warns_but_installs() {
+    // A pinned release whose Godot range does not cover the project's Godot
+    // version still installs - the resolver warns on stderr rather than
+    // failing or silently skipping the dependency.
+    let api = MockApi::start().await;
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[StoreArchive::new(
+            3,
+            "2.0.0",
+            true,
+            "4.4",
+            None,
+            zip_bytes(&[("addon/addon.txt", "# content")]),
+        )],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project
+        .env_store_api(&api)
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:2.0.0")
+        .write();
+
+    project
+        .cmd()
+        .arg("sync")
+        .assert()
+        .success()
+        .stderr(contains("requires Godot v4.4..latest"));
+
+    assert_eq!(project.read("addon.txt"), "# content");
+}
+
+#[tokio::test]
+async fn sync_store_modified_owned_blocks_then_force_overwrites() {
+    // Store deps must obey the same ownership rules as git/archive/asset-lib
+    // deps: editing an installed file blocks re-sync, and `--force` restores.
+    let api = MockApi::start().await;
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[StoreArchive::new(
+            2,
+            "1.0.0",
+            true,
+            "4.0",
+            None,
+            zip_bytes(&[("addon/addon-file.txt", "addon content")]),
+        )],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project
+        .env_store_api(&api)
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:1.0.0")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+    project.write("addon-file.txt", "# user change");
+
+    // Modified owned file: blocked without --force.
+    project
+        .cmd()
+        .arg("sync")
+        .assert()
+        .failure()
+        .stderr(contains("modified since last install"));
+
+    // --force discards the edit and restores the installed content.
+    project.cmd().args(["sync", "--force"]).assert().success();
+
+    assert_eq!(project.read("addon-file.txt"), "addon content");
+}
+
+#[tokio::test]
+async fn sync_store_version_remap_removes_stale_files() {
+    // Bumping the pinned version in ggg.toml re-resolves the store dep (the
+    // lock key includes the version); files from the old version are cleaned
+    // up like any remap.
+    let api = MockApi::start().await;
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[
+            StoreArchive::new(
+                2,
+                "1.0.0",
+                true,
+                "4.0",
+                None,
+                zip_bytes(&[("addon/a.txt", "# v1")]),
+            ),
+            StoreArchive::new(
+                3,
+                "2.0.0",
+                true,
+                "4.0",
+                None,
+                zip_bytes(&[("addon/b.txt", "# v2")]),
+            ),
+        ],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project
+        .env_store_api(&api)
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:1.0.0")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+    assert_eq!(project.read("a.txt"), "# v1");
+
+    // Repoint the same dep at a newer pinned version.
+    project
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:2.0.0")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+
+    assert_eq!(project.read("b.txt"), "# v2");
+    assert!(
+        !project.exists("a.txt"),
+        "stale file should be removed after version remap"
     );
 }
 
@@ -688,5 +966,241 @@ async fn sync_downloads_export_templates() {
             .iter()
             .any(|q| q.contains("slug=export_templates.tpz")),
         "expected a downloads-host request for the .tpz, got: {queries:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lock file reconciliation
+// ---------------------------------------------------------------------------
+
+/// `ggg sync` prunes lock entries for dependencies removed from `ggg.toml`.
+#[test]
+fn sync_prunes_lock_entries_for_removed_deps() {
+    // ggg.lock is derived from ggg.toml: when a dependency is removed from the
+    // config, the next sync must drop its lock entry too instead of leaving an
+    // orphan behind that `ggg update`/`ggg diff` would trip over.
+    let repo_a = BareRepo::builder().with("a.txt", "# from a").build();
+    let repo_b = BareRepo::builder().with("b.txt", "# from b").build();
+    let project = TestProject::new();
+
+    project
+        .config()
+        .git("alpha", repo_a.file_url(), "main")
+        .git("beta", repo_b.file_url(), "main")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+    let lock_names: Vec<String> = project
+        .read_ggg_lock()
+        .entries
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(lock_names, ["alpha", "beta"]);
+
+    // Remove `beta` via `ggg remove` (edits ggg.toml) and sync again.
+    project.cmd().args(["remove", "beta"]).assert().success();
+    project.cmd().arg("sync").assert().success();
+
+    let lock_names: Vec<String> = project
+        .read_ggg_lock()
+        .entries
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(
+        lock_names,
+        ["alpha"],
+        "lock entry for removed dep must be pruned: {:?}",
+        project.read("ggg.lock")
+    );
+}
+
+/// `ggg sync` rewrites a lock entry when a dependency changes source kind.
+#[tokio::test]
+async fn sync_rewrites_lock_entry_when_source_kind_changes() {
+    // A dependency whose config key flips from git to archive (same name)
+    // must not be treated as a new dependency: the entry is rewritten in place
+    // so ggg.lock never holds both identity sets for one name.
+    let repo = BareRepo::builder().with("x.txt", "# git x").build();
+    let mut project = TestProject::new();
+    project.config().git("foo", repo.file_url(), "main").write();
+    project.cmd().arg("sync").assert().success();
+
+    let lock = project.read_ggg_lock();
+    let before = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "foo")
+        .expect("sync should record a git entry for foo");
+    assert_eq!(before.kind(), Some(ggg::config::SourceKind::Git));
+    assert!(before.git.is_some() && before.rev.is_some() && before.sha.is_some());
+    assert!(before.url.is_none());
+
+    // Re-declare `foo` as an archive dependency served by the mock.
+    let api = MockApi::start().await;
+    api.mount_file("/files/foo.zip", zip_bytes(&[("z.txt", "# archive z")]))
+        .await;
+    project
+        .config()
+        .archive("foo", format!("{}/files/foo.zip", api.base_url()))
+        .write();
+    project.env_api(&api);
+
+    project.cmd().arg("sync").assert().success();
+
+    let lock = project.read_ggg_lock();
+    let after = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "foo")
+        .expect("sync should record an entry for foo");
+    assert_eq!(after.kind(), Some(ggg::config::SourceKind::Archive));
+    assert!(
+        after.url.is_some() && after.archive_sha.is_some(),
+        "lock entry should be rewritten for the archive kind: {:?}",
+        project.read("ggg.lock")
+    );
+    assert!(after.git.is_none() && after.rev.is_none() && after.sha.is_none());
+    assert_eq!(project.read("z.txt"), "# archive z");
+    assert!(!project.exists("x.txt"));
+}
+
+// ---------------------------------------------------------------------------
+// Incomplete lock entries are re-resolved and re-locked
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sync_relocks_incomplete_asset_lib_lock() {
+    // A lock entry that records the dependency's identity and version but no
+    // resolved url/archive_sha (as if sync never finished resolving it) must
+    // not hard-error: sync re-resolves through the asset library detail
+    // endpoint, downloads the archive, and re-locks a complete entry.
+    let api = MockApi::start().await;
+    mount_asset(&api, 42, &[("addon/addon-file.txt", "addon content")]).await;
+
+    let mut project = TestProject::new();
+    project
+        .env_api(&api)
+        .config()
+        .asset_lib("my-addon", 42)
+        .write();
+    project
+        .lock()
+        .asset_lib_unresolved("my-addon", 42, 1)
+        .write();
+
+    project
+        .cmd()
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(contains("my-addon"));
+
+    assert_eq!(project.read("addon-file.txt"), "addon content");
+
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    assert!(
+        entry.url.is_some() && entry.archive_sha.is_some(),
+        "incomplete asset-lib lock should be re-locked with url + archive_sha: {:?}",
+        project.read("ggg.lock")
+    );
+    assert_eq!(entry.asset_library_id, Some(42));
+}
+
+#[tokio::test]
+async fn sync_relocks_incomplete_store_lock() {
+    // A lock entry that records the store identity (publisher/asset/release
+    // version) but no resolved url/archive_sha must be re-resolved against the
+    // releases endpoint and re-locked rather than hard-erroring.
+    let api = MockApi::start().await;
+    api.mount_store_releases_with_archives(
+        "souleat",
+        "photon-torpedo",
+        &[StoreArchive::new(
+            2,
+            "1.0.0",
+            true,
+            "4.0",
+            None,
+            zip_bytes(&[("addon/addon-file.txt", "addon content")]),
+        )],
+    )
+    .await;
+
+    let mut project = TestProject::new();
+    project
+        .env_store_api(&api)
+        .config()
+        .asset_store("my-addon", "souleat/photon-torpedo:1.0.0")
+        .write();
+    project
+        .lock()
+        .store_unresolved("my-addon", "souleat", "photon-torpedo", "1.0.0")
+        .write();
+
+    project
+        .cmd()
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(contains("my-addon"));
+
+    assert_eq!(project.read("addon-file.txt"), "addon content");
+
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    assert_eq!(entry.publisher_slug.as_deref(), Some("souleat"));
+    assert_eq!(entry.asset_slug.as_deref(), Some("photon-torpedo"));
+    assert_eq!(entry.release_version.as_deref(), Some("1.0.0"));
+    assert!(
+        entry.url.is_some() && entry.archive_sha.is_some(),
+        "incomplete store lock should be re-locked with url + archive_sha: {:?}",
+        project.read("ggg.lock")
+    );
+}
+
+#[tokio::test]
+async fn sync_relocks_asset_lib_lock_without_version() {
+    // A lock entry that carries the resolution (url/archive_sha) but no
+    // recorded asset_version is drifted: sync must not silently reuse it (and
+    // keep the lock missing the version) but re-resolve and record it.
+    let api = MockApi::start().await;
+    mount_asset(&api, 42, &[("addon/addon-file.txt", "addon content")]).await;
+
+    let mut project = TestProject::new();
+    project
+        .env_api(&api)
+        .config()
+        .asset_lib("my-addon", 42)
+        .write();
+    project
+        .lock()
+        .asset_lib_without_version("my-addon", 42, "https://example.com/old", "old-sha")
+        .write();
+
+    project.cmd().arg("sync").assert().success();
+
+    assert_eq!(project.read("addon-file.txt"), "addon content");
+
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    assert!(
+        entry.asset_version.is_some(),
+        "lock should record the re-resolved asset_version: {:?}",
+        project.read("ggg.lock")
     );
 }

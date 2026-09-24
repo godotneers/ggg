@@ -16,7 +16,10 @@
 //! asset author has not provided one.  The deserializers below handle these.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
+
+use crate::godot::release::GodotVersion;
+use crate::utils::de::{de_optional_hash, de_string_u32};
 
 /// The Asset Library API base URL, overridable via the `GGG_ASSET_LIB_API_URL`
 /// environment variable ([`crate::envvars::ASSET_LIB_API_URL_ENV_VAR`]) so
@@ -24,23 +27,6 @@ use serde::{Deserialize, Deserializer};
 pub fn asset_lib_api_url() -> String {
     std::env::var(crate::envvars::ASSET_LIB_API_URL_ENV_VAR)
         .unwrap_or_else(|_| "https://godotengine.org/asset-library/api".to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Wire format helpers
-// ---------------------------------------------------------------------------
-
-/// Deserialise a field that the API returns as a JSON string containing a
-/// decimal integer (e.g. `"1586"`) into a `u32`.
-fn de_string_u32<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
-    let s = String::deserialize(d)?;
-    s.parse::<u32>().map_err(serde::de::Error::custom)
-}
-
-/// Deserialise `download_hash`: treat an empty string as `None`.
-fn de_optional_hash<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    let s = String::deserialize(d)?;
-    Ok(if s.is_empty() { None } else { Some(s) })
 }
 
 // ---------------------------------------------------------------------------
@@ -96,11 +82,15 @@ struct SearchResponse {
 // ---------------------------------------------------------------------------
 
 /// Search the asset library for `query`, filtered to assets compatible with
-/// the given Godot `major.minor` version string (e.g. `"4.3"`).
+/// the given Godot version (the `godot_version` API filter, sent as
+/// `MAJOR.MINOR`).  Pass `None` to skip the filter.
 ///
 /// Returns `(results, total_count)`.  `total_count` may be larger than
 /// `results.len()` when there are multiple pages.
-pub fn search(query: &str, godot_version: &str) -> Result<(Vec<AssetSearchResult>, u32)> {
+pub fn search(
+    query: &str,
+    godot_version: Option<&GodotVersion>,
+) -> Result<(Vec<AssetSearchResult>, u32)> {
     let client = build_client()?;
     let url = format!("{}/asset", asset_lib_api_url());
     let mut req = client.get(&url).query(&[
@@ -108,8 +98,8 @@ pub fn search(query: &str, godot_version: &str) -> Result<(Vec<AssetSearchResult
         ("support", "official+community"),
         ("sort", "updated"),
     ]);
-    if !godot_version.is_empty() {
-        req = req.query(&[("godot_version", godot_version)]);
+    if let Some(version) = godot_version {
+        req = req.query(&[("godot_version", version.major_minor())]);
     }
     let response: SearchResponse = req
         .send()

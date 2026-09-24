@@ -69,23 +69,24 @@ pub fn run(file: Option<&str>) -> Result<()> {
         }
 
         let cache_dir = dep_cache.entry_path(&work.resolved);
-        let file_map = cache_file_map(&work.resolved, &cache_dir).with_context(|| {
-            format!("failed to enumerate cache for {:?}", work.resolved.dep.name)
-        })?;
+        let file_map = cache_file_map(&work.resolved, &cache_dir)
+            .with_context(|| format!("failed to enumerate cache for {:?}", work.resolved.name()))?;
 
         if any_printed {
             println!();
         }
         println!(
             "Diff for {} ({}):",
-            work.resolved.dep.name, &work.resolve_note
+            work.resolved.name(),
+            &work.resolve_note
         );
 
         for path in modified {
             let Some(cache_path) = file_map.get(path) else {
                 eprintln!(
                     "  warning: {} not found in cache for {:?}",
-                    path, work.resolved.dep.name
+                    path,
+                    work.resolved.name()
                 );
                 continue;
             };

@@ -19,6 +19,8 @@ use std::str::FromStr;
 use anyhow::{Context, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::utils::validation::validate_path_component;
+
 // ---------------------------------------------------------------------------
 // GodotVersion
 // ---------------------------------------------------------------------------
@@ -43,6 +45,15 @@ impl GodotVersion {
             minor,
             patch,
         }
+    }
+
+    /// Render just the `MAJOR.MINOR` components, dropping any patch.
+    ///
+    /// This is the version-series format used by the API clients as the Asset
+    /// Library `godot_version` filter and the Asset Store `compatibility`
+    /// filter (e.g. `"4.3"` for `4.3.1`).
+    pub fn major_minor(&self) -> String {
+        format!("{}.{}", self.major, self.minor)
     }
 }
 
@@ -207,28 +218,6 @@ impl<'de> Deserialize<'de> for GodotRelease {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Returns an error if `value` contains characters that could escape a
-/// directory when used as a path component.
-///
-/// Allowed: alphanumeric characters, `.`, `-`. Everything else is rejected,
-/// including `/`, `\`, and `..` sequences.
-pub(super) fn validate_path_component(field: &str, value: &str) -> anyhow::Result<()> {
-    if value.is_empty() {
-        bail!("GodotRelease {field} must not be empty");
-    }
-    if !value
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
-    {
-        bail!("GodotRelease {field} contains invalid characters: \"{value}\"");
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -267,6 +256,12 @@ mod tests {
     #[test]
     fn version_display_keeps_nonzero_patch() {
         assert_eq!(GodotVersion::new(4, 3, 1).to_string(), "4.3.1");
+    }
+
+    #[test]
+    fn version_major_minor_drops_patch() {
+        assert_eq!(GodotVersion::new(4, 3, 0).major_minor(), "4.3");
+        assert_eq!(GodotVersion::new(4, 3, 1).major_minor(), "4.3");
     }
 
     #[test]

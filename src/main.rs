@@ -65,40 +65,59 @@ enum Command {
 
     /// Add a new dependency
     ///
-    /// The type keyword (git, archive, asset) is optional; ggg infers it when omitted:
+    /// The type keyword (git, archive, asset-store, asset-library, asset) is
+    /// optional; ggg infers it when omitted:
     ///   - archive extensions (.zip, .tar.gz, .tgz) -> archive
+    ///   - Asset Store references (publisher/slug[:version]) -> asset-store
     ///   - git-style URLs (containing ://, ending in .git, or SCP-style) -> git
-    ///   - anything else -> Godot Asset Library search
+    ///   - numeric IDs -> asset-library
+    ///   - anything else -> search of the Asset Store and Asset Library
+    ///
+    /// `asset` is an alias for `asset-store`. Asset Store dependencies always
+    /// pin a version; a bare publisher/slug resolves to the latest stable
+    /// release compatible with the project's Godot version (add `:version` to
+    /// pin an exact one).
     ///
     /// Examples:
     ///   ggg add https://github.com/user/addon.git@v1.0
     ///   ggg add git https://github.com/user/addon.git@v1.0
     ///   ggg add archive https://example.com/addon.zip --sha256 <hash>
-    ///   ggg add asset gut
-    ///   ggg add asset --id 54
+    ///   ggg add asset-store souleat/godot-xoshiro256-plus-plus
+    ///   ggg add asset souleat/godot-xoshiro256-plus-plus:1.1.0
+    ///   ggg add asset-store decal-co --yes
+    ///   ggg add asset-library --id 54
+    ///   ggg add 54
+    ///   ggg add gut
     #[command(verbatim_doc_comment)]
     Add(AddArgs),
 
-    /// Search the Godot Asset Library
+    /// Search the Godot Asset Store or Asset Library for addons
     ///
-    /// Filters results to assets compatible with the Godot version declared in
-    /// ggg.toml.  Use `ggg add asset --id <N>` to add a specific result.
+    /// Filters results to addons compatible with the Godot version declared in
+    /// ggg.toml.  The default source is the Asset Store; pass `--source
+    /// asset-library` to search the legacy Asset Library instead.
     Search {
         /// Search query
         query: String,
         /// Override the Godot version used for filtering (e.g. "4.3")
         #[arg(long)]
         godot_version: Option<String>,
+        /// Source to search: asset-store (default) or asset-library
+        #[arg(long, value_enum, default_value_t = commands::search::SearchSource::AssetStore)]
+        source: commands::search::SearchSource,
     },
 
-    /// Check for updates to Godot Asset Library dependencies
+    /// Check for updates to Godot Asset Library and Asset Store dependencies
     ///
-    /// Queries the asset library for the current version of each dep and, if
-    /// a newer one is available, drops the lock entry so that `ggg sync`
-    /// fetches it.  Omit the name to check all asset library dependencies.
+    /// Queries the asset library / asset store for the current version of each
+    /// dep and, if a newer one is available, drops the lock entry so that
+    /// `ggg sync` fetches it. Store deps also get their pinned version in
+    /// ggg.toml bumped to the newest compatible release.  Omit the name to
+    /// check all eligible dependencies.
     ///
-    /// Only works for dependencies added via `ggg add asset`.  For git or
-    /// archive dependencies, update by editing ggg.toml and running ggg sync.
+    /// Only works for dependencies added via `ggg add asset-library` or `ggg
+    /// add asset-store`.  For git or archive dependencies, update by editing
+    /// ggg.toml and running ggg sync.
     Update {
         /// Name of the dependency to check (omit to check all)
         name: Option<String>,
@@ -145,7 +164,8 @@ enum Command {
 
 #[derive(Args)]
 struct AddArgs {
-    /// Dependency type (git, archive, asset) or URL/query for auto-detection
+    /// Dependency type (git, archive, asset-library, asset-store, asset) or
+    /// URL/query for auto-detection
     #[arg(value_name = "TYPE_OR_INPUT")]
     type_or_input: Option<String>,
 
@@ -169,7 +189,7 @@ struct AddArgs {
     #[arg(long, help_heading = "Archive Options")]
     sha256: Option<String>,
 
-    /// Use this asset ID directly, skipping the search (asset only)
+    /// Use this asset ID directly, skipping the search (asset-library only)
     #[arg(long, help_heading = "Asset Library Options")]
     id: Option<u32>,
 }
@@ -203,17 +223,59 @@ fn main() -> Result<()> {
             id,
         }) => {
             let name = name.as_deref();
+            let sha256 = sha256.as_deref();
+            let id_invalid = || bail!("--id is only valid with `ggg add asset-library`");
+            let sha_invalid = || bail!("--sha256 is only valid with `ggg add archive`");
             match type_or_input.as_deref() {
-                Some("git") => commands::add::run_git(input.as_deref(), name, yes),
-                Some("archive") => commands::add::run_archive(
-                    input.as_deref(),
-                    name,
-                    strip_components,
-                    sha256.as_deref(),
+                Some("git") => {
+                    if id.is_some() {
+                        id_invalid()?;
+                    }
+                    if sha256.is_some() {
+                        sha_invalid()?;
+                    }
+                    if strip_components.is_some() {
+                        bail!("--strip-components is not valid for git dependencies");
+                    }
+                    commands::add::run_git(input.as_deref(), name, yes)
+                }
+                Some("archive") => {
+                    if id.is_some() {
+                        id_invalid()?;
+                    }
+                    commands::add::run_archive(
+                        input.as_deref(),
+                        name,
+                        strip_components,
+                        sha256,
+                        yes,
+                    )
+                }
+                Some("asset-library") => {
+                    if sha256.is_some() {
+                        sha_invalid()?;
+                    }
+                    commands::add::run_asset(input.as_deref(), id, name, yes, strip_components)
+                }
+                Some("asset" | "asset-store") => {
+                    if id.is_some() {
+                        bail!(
+                            "--id is only valid with `ggg add asset-library`; \
+                             Asset Store references use publisher/slug[:version]"
+                        );
+                    }
+                    if sha256.is_some() {
+                        sha_invalid()?;
+                    }
+                    commands::add::run_asset_store(input.as_deref(), name, yes, strip_components)
+                }
+                Some(url_or_query) => {
+                    commands::add::run_bare(url_or_query, name, yes, strip_components, sha256, id)
+                }
+                None => bail!(
+                    "specify a type (git, archive, asset-store, asset-library, asset) \
+                     or provide a URL/query"
                 ),
-                Some("asset") => commands::add::run_asset(input.as_deref(), id, name, yes),
-                Some(url_or_query) => commands::add::run_bare(url_or_query, name, yes),
-                None => bail!("specify a type (git, archive, asset) or provide a URL/query"),
             }
         }
         Command::Deps => commands::deps::run(),
@@ -223,7 +285,8 @@ fn main() -> Result<()> {
         Command::Search {
             query,
             godot_version,
-        } => commands::search::run(&query, godot_version.as_deref()),
+            source,
+        } => commands::search::run(&query, godot_version.as_deref(), source),
         Command::Update { name, dry_run } => commands::update::run(name.as_deref(), dry_run),
     }
 }

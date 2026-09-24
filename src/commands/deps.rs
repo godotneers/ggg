@@ -7,7 +7,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::config::{Config, DepKind};
+use crate::config::{Config, Source};
+use crate::utils::output::print_table;
 
 pub fn run() -> Result<()> {
     let config = Config::load(Path::new("ggg.toml"))?;
@@ -17,41 +18,28 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Column widths.
-    let name_w = config
-        .dependency
-        .iter()
-        .map(|d| d.name.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-    let type_w = 7; // "archive" is the longest type label
-
-    println!("{:<name_w$}  {:<type_w$}  Version / Source", "Name", "Type");
-    println!("{}", "-".repeat(name_w + 2 + type_w + 2 + 16));
-
-    for dep in &config.dependency {
-        let (type_label, version_info) = match dep.kind() {
-            DepKind::Git { git, rev } => {
-                let short_url = git
-                    .trim_end_matches(".git")
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(git);
-                ("git", format!("{rev}  ({short_url})"))
-            }
-            DepKind::Archive { url, .. } => {
-                // Show just the filename part of the URL.
-                let filename = url.rsplit('/').next().unwrap_or(url);
-                ("archive", filename.to_owned())
-            }
-            DepKind::AssetLib { asset_id } => ("asset", format!("asset #{asset_id}")),
-        };
-        println!(
-            "{:<name_w$}  {:<type_w$}  {}",
-            dep.name, type_label, version_info
-        );
-    }
-
+    print_table(
+        &["Name", "Type", "Version / Source"],
+        &config.dependency,
+        &[
+            Box::new(|dep| dep.name.to_string()),
+            Box::new(|dep| match &dep.source {
+                Source::Git { .. } => "git".to_string(),
+                Source::Archive { .. } => "archive".to_string(),
+                Source::AssetLib { .. } => "asset-lib".to_string(),
+                Source::AssetStore { .. } => "asset-store".to_string(),
+            }),
+            Box::new(|dep| match &dep.source {
+                Source::Git { rev, .. } => rev.to_string(),
+                Source::Archive { url, .. } => url.to_string(),
+                Source::AssetLib {
+                    asset_library_id, ..
+                } => format!("asset #{asset_library_id}"),
+                Source::AssetStore {
+                    asset_store_asset, ..
+                } => asset_store_asset.to_string(),
+            }),
+        ],
+    );
     Ok(())
 }

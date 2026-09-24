@@ -44,6 +44,7 @@ fn deps_lists_dependencies() {
         .config()
         .git("dep1", "https://example.com/dep1", "v1.2.3")
         .archive("addon", "https://example.com/addon.zip")
+        .asset_lib("dialogic", 1216)
         .write();
 
     let assert = project.cmd().arg("deps").assert().success();
@@ -51,5 +52,28 @@ fn deps_lists_dependencies() {
         .stdout(contains("dep1"))
         .stdout(contains("v1.2.3"))
         .stdout(contains("addon"))
-        .stdout(contains("addon.zip"));
+        .stdout(contains("addon.zip"))
+        .stdout(contains("dialogic"))
+        .stdout(contains("asset-lib"))
+        .stdout(contains("asset #1216"));
+}
+
+/// Asset Store dependencies render with type `asset-store` and the
+/// `publisher_slug/asset_slug:version` spec.
+#[test]
+fn deps_lists_asset_store_dependency() {
+    let project = TestProject::new();
+    project
+        .config()
+        .asset_store("my-addon", "publisher/my-addon:1.2.3")
+        .write();
+
+    project
+        .cmd()
+        .arg("deps")
+        .assert()
+        .success()
+        .stdout(contains("my-addon"))
+        .stdout(contains("asset-store"))
+        .stdout(contains("publisher/my-addon:1.2.3"));
 }

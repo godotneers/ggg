@@ -19,7 +19,6 @@ use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 
-use crate::config::DepKind;
 use crate::dependency::ResolvedDependency;
 
 // ---------------------------------------------------------------------------
@@ -35,30 +34,31 @@ use crate::dependency::ResolvedDependency;
 ///
 /// Call [`cleanup`] on the returned path after the cache has installed it.
 pub fn download(dep: &ResolvedDependency) -> Result<(PathBuf, String)> {
-    match dep.dep.kind() {
-        DepKind::Git { git, .. } => {
-            let path = download_git(&dep.dep.name, git, &dep.sha)?;
-            Ok((path, dep.sha.clone()))
-        }
-        DepKind::Archive { url, sha256, .. } => {
-            let sha_hint = if dep.sha.is_empty() {
-                sha256
+    match dep {
+        ResolvedDependency::Git(g) => download_git(&g.meta.name, &g.git, &g.sha),
+        ResolvedDependency::Archive(a) => {
+            let sha_hint = if a.sha.is_empty() {
+                a.sha256.as_deref()
             } else {
-                Some(dep.sha.as_str())
+                Some(a.sha.as_str())
             };
-            download_archive(&dep.dep.name, url, sha_hint)
+            download_archive(&a.meta.name, &a.url, sha_hint)
         }
-        DepKind::AssetLib { .. } => {
-            let url = dep
-                .resolved_url
-                .as_deref()
-                .expect("AssetLib ResolvedDependency must have resolved_url set");
-            let sha_hint = if dep.sha.is_empty() {
+        ResolvedDependency::AssetLib(a) => {
+            let sha_hint = if a.sha.is_empty() {
                 None
             } else {
-                Some(dep.sha.as_str())
+                Some(a.sha.as_str())
             };
-            download_archive(&dep.dep.name, url, sha_hint)
+            download_archive(&a.meta.name, &a.resolved_url, sha_hint)
+        }
+        ResolvedDependency::AssetStore(a) => {
+            let sha_hint = if a.sha.is_empty() {
+                None
+            } else {
+                Some(a.sha.as_str())
+            };
+            download_archive(&a.meta.name, &a.resolved_url, sha_hint)
         }
     }
 }
@@ -76,7 +76,7 @@ pub fn cleanup(path: &Path) {
 // Git
 // ---------------------------------------------------------------------------
 
-fn download_git(name: &str, url: &str, sha: &str) -> Result<PathBuf> {
+fn download_git(name: &str, url: &str, sha: &str) -> Result<(PathBuf, String)> {
     let tmp = tempfile::TempDir::new()
         .context("failed to create temporary directory for dependency download")?;
 
@@ -98,7 +98,7 @@ fn download_git(name: &str, url: &str, sha: &str) -> Result<PathBuf> {
 
     pb.finish_with_message(format!("Fetched {name}"));
 
-    Ok(tmp.keep())
+    Ok((tmp.keep(), sha.to_owned()))
 }
 
 fn fetch(repo: &gix::Repository, url: &str, sha: &str, depth: Option<NonZeroU32>) -> Result<()> {

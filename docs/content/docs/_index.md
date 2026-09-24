@@ -13,7 +13,7 @@ Godot Goodie Grabber fixes this.
 Godot Goodie Grabber is a project manager for Godot games, inspired by [uv](https://github.com/astral-sh/uv) for Python. It gives every project a `ggg.toml` file that declares two things:
 
 - **The Godot version** the project requires
-- **A list of addon dependencies** sourced from git repositories, pre-built archives, or the [Godot Asset Library](https://godotengine.org/asset-library/)
+- **A list of addon dependencies** sourced from git repositories, pre-built archives, the [Godot Asset Library](https://godotengine.org/asset-library/), or the [Godot Asset Store](https://store.godotengine.org/)
 
 From there, a single command - `ggg sync` - downloads the right Godot binary and installs every declared addon at the exact version pinned in `ggg.lock`. No more README instructions, no more committed vendor trees, no more "works on my machine" engine mismatches.
 

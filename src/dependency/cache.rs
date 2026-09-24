@@ -32,8 +32,7 @@ use gix::bstr::ByteSlice;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::config::DepKind;
-use crate::dependency::ResolvedDependency;
+use crate::dependency::{GitResolvedDependency, ResolvedDependency};
 
 /// Filename written into every cache entry for human inspection.
 const METADATA_FILE: &str = ".ggg_dep_info.toml";
@@ -78,27 +77,17 @@ impl DependencyCache {
         if self.contains(dep) {
             return Ok(self.dep_dir(dep));
         }
-        match dep.dep.kind() {
-            DepKind::Git { git, .. } => self.install_git(dep, git, path),
-            DepKind::Archive { url, .. } => self.install_archive(dep, url, path),
-            DepKind::AssetLib { .. } => {
-                let url = dep
-                    .resolved_url
-                    .as_deref()
-                    .expect("AssetLib ResolvedDependency must have resolved_url set");
-                self.install_archive(dep, url, path)
-            }
+        match dep {
+            ResolvedDependency::Git(g) => self.install_git(g, path),
+            ResolvedDependency::Archive(_)
+            | ResolvedDependency::AssetLib(_)
+            | ResolvedDependency::AssetStore(_) => self.install_archive(dep, path),
         }
     }
 
-    fn install_git(
-        &self,
-        dep: &ResolvedDependency,
-        git: &str,
-        repo_path: &Path,
-    ) -> Result<PathBuf> {
-        let dest = self.dep_dir(dep);
-        let hash_dir = self.base.join(url_hash(&normalize_url(git)));
+    fn install_git(&self, dep: &GitResolvedDependency, repo_path: &Path) -> Result<PathBuf> {
+        let dest = self.git_dep_dir(dep);
+        let hash_dir = self.base.join(url_hash(&normalize_url(&dep.git)));
 
         let tmp_dir = tempfile::Builder::new()
             .prefix(".install-")
@@ -115,7 +104,7 @@ impl DependencyCache {
             .context("failed to create temporary install directory")?;
 
         extract_tree(dep, repo_path, tmp_dir.path())
-            .with_context(|| format!("failed to extract tree for {:?}", dep.dep.name))?;
+            .with_context(|| format!("failed to extract tree for {:?}", dep.meta.name))?;
 
         write_git_metadata(dep, tmp_dir.path()).context("failed to write dependency metadata")?;
 
@@ -126,13 +115,9 @@ impl DependencyCache {
         Ok(dest)
     }
 
-    fn install_archive(
-        &self,
-        dep: &ResolvedDependency,
-        url: &str,
-        archive: &Path,
-    ) -> Result<PathBuf> {
+    fn install_archive(&self, dep: &ResolvedDependency, archive: &Path) -> Result<PathBuf> {
         let dest = self.dep_dir(dep);
+        let url = dep.archive_url();
 
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -143,8 +128,8 @@ impl DependencyCache {
             format!("failed to create cache entry directory {}", dest.display())
         })?;
 
-        extract_archive(&dep.dep.name, url, &dep.sha, archive, &dest)
-            .with_context(|| format!("failed to extract {:?} into cache", dep.dep.name))?;
+        extract_archive(dep.name(), url, dep.sha(), archive, &dest)
+            .with_context(|| format!("failed to extract {:?} into cache", dep.name()))?;
 
         Ok(dest)
     }
@@ -158,19 +143,22 @@ impl DependencyCache {
     }
 
     fn dep_dir(&self, dep: &ResolvedDependency) -> PathBuf {
-        match dep.dep.kind() {
-            DepKind::Git { git, .. } => {
-                self.base.join(url_hash(&normalize_url(git))).join(&dep.sha)
-            }
-            DepKind::Archive { url, .. } => self.base.join(url_hash(url)).join(&dep.sha),
-            DepKind::AssetLib { .. } => {
-                let url = dep
-                    .resolved_url
-                    .as_deref()
-                    .expect("AssetLib ResolvedDependency must have resolved_url set");
-                self.base.join(url_hash(url)).join(&dep.sha)
-            }
+        match dep {
+            ResolvedDependency::Git(g) => self.git_dep_dir(g),
+            ResolvedDependency::Archive(a) => self.archive_dep_dir(&a.url, &a.sha),
+            ResolvedDependency::AssetLib(a) => self.archive_dep_dir(&a.resolved_url, &a.sha),
+            ResolvedDependency::AssetStore(a) => self.archive_dep_dir(&a.resolved_url, &a.sha),
         }
+    }
+
+    fn git_dep_dir(&self, dep: &GitResolvedDependency) -> PathBuf {
+        self.base
+            .join(url_hash(&normalize_url(&dep.git)))
+            .join(&dep.sha)
+    }
+
+    fn archive_dep_dir(&self, url: &str, sha: &str) -> PathBuf {
+        self.base.join(url_hash(url)).join(sha)
     }
 }
 
@@ -283,7 +271,7 @@ fn write_archive_metadata(name: &str, url: &str, archive_sha: &str, dest_dir: &P
 
 /// Extract the exported tree from the bare repository at `repo_path` into
 /// `dest`, skipping any paths with the `export-ignore` gitattribute.
-fn extract_tree(dep: &ResolvedDependency, repo_path: &Path, dest: &Path) -> Result<()> {
+fn extract_tree(dep: &GitResolvedDependency, repo_path: &Path, dest: &Path) -> Result<()> {
     let repo = gix::open(repo_path)
         .with_context(|| format!("failed to open bare repository at {}", repo_path.display()))?;
 
@@ -429,14 +417,11 @@ struct GitDepInfo<'a> {
     sha: &'a str,
 }
 
-fn write_git_metadata(dep: &ResolvedDependency, dest: &Path) -> Result<()> {
-    let DepKind::Git { git, rev } = dep.dep.kind() else {
-        anyhow::bail!("write_git_metadata called on non-git dep");
-    };
+fn write_git_metadata(dep: &GitResolvedDependency, dest: &Path) -> Result<()> {
     let info = GitDepInfo {
-        name: &dep.dep.name,
-        git,
-        rev,
+        name: &dep.meta.name,
+        git: &dep.git,
+        rev: &dep.rev,
         sha: &dep.sha,
     };
     let content = toml_edit::ser::to_string_pretty(&info)
@@ -452,6 +437,7 @@ fn write_git_metadata(dep: &ResolvedDependency, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dependency::ResolvedMeta;
 
     fn make_cache() -> (tempfile::TempDir, DependencyCache) {
         let dir = tempfile::tempdir().unwrap();
@@ -460,12 +446,16 @@ mod tests {
     }
 
     fn resolved(git: &str, sha: &str) -> ResolvedDependency {
-        ResolvedDependency {
-            dep: crate::config::Dependency::new_git("test", git, "main"),
+        ResolvedDependency::Git(GitResolvedDependency {
+            meta: ResolvedMeta {
+                name: "test".into(),
+                map: None,
+                exclude: None,
+            },
+            git: git.to_owned(),
+            rev: "main".to_owned(),
             sha: sha.into(),
-            resolved_url: None,
-            asset_version: None,
-        }
+        })
     }
 
     // --- URL normalisation ---------------------------------------------------

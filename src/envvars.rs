@@ -16,6 +16,10 @@ pub const GODOT_MANIFEST_URL_ENV_VAR: &str = "GGG_GODOT_MANIFEST_URL";
 /// ([`crate::godot::asset_lib::asset_lib_api_url`]).
 pub const ASSET_LIB_API_URL_ENV_VAR: &str = "GGG_ASSET_LIB_API_URL";
 
+/// Overrides the Godot Asset Store API base URL
+/// ([`crate::godot::asset_store::asset_store_api_url`]).
+pub const ASSET_STORE_API_URL_ENV_VAR: &str = "GGG_ASSET_STORE_API_URL";
+
 /// Overrides the Godot builds (GitHub releases) API base URL
 /// ([`crate::godot::download::godot_builds_api_url`]).
 pub const GODOT_BUILDS_API_URL_ENV_VAR: &str = "GGG_GODOT_BUILDS_API_URL";

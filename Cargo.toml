@@ -23,6 +23,8 @@ gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "bloc
 sha2 = "0.10"
 diffy = "0.3"
 globset = "0.4"
+terminal_size = "0.4.4"
+versions = "8"
 
 [dev-dependencies]
 assert_cmd = "2"

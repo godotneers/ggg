@@ -35,7 +35,7 @@ Useful for integration tests and CI environments where writing to the real Godot
 
 ## Endpoint overrides
 
-Each of the hardcoded remote endpoints ggg talks to (Godot versions manifest, engine builds API, asset library API, export template downloads) can be overridden with an environment variable. This is primarily intended for testing and for mirroring the endpoints, letting you point ggg at a local or proxied server without code changes.
+Each of the hardcoded remote endpoints ggg talks to (Godot versions manifest, engine builds API, asset library API, asset store API, export template downloads) can be overridden with an environment variable. This is primarily intended for testing and for mirroring the endpoints, letting you point ggg at a local or proxied server without code changes.
 
 When unset, the built-in default URL is used.
 
@@ -44,6 +44,7 @@ When unset, the built-in default URL is used.
 | `GGG_GODOT_MANIFEST_URL`       | Godot versions manifest (`GET` the whole YAML)                  | `https://raw.githubusercontent.com/godotengine/godot-website/master/_data/versions.yml` |
 | `GGG_GODOT_BUILDS_API_URL`     | Godot builds GitHub releases API base (release tag is appended) | `https://api.github.com/repos/godotengine/godot-builds/releases/tags`                   |
 | `GGG_ASSET_LIB_API_URL`        | Godot Asset Library API base                                    | `https://godotengine.org/asset-library/api`                                             |
+| `GGG_ASSET_STORE_API_URL`      | Godot Asset Store API base (v1)                                 | `https://store.godotengine.org/api/v1`                                                  |
 | `GGG_GODOT_DOWNLOADS_BASE_URL` | Godot downloads base host used for export templates             | `https://downloads.godotengine.org`                                                     |
 
 ```bash

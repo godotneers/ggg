@@ -38,11 +38,16 @@ fn sync_installs_git_dependency_from_file_url() {
     assert_eq!(project.read("plugin.gd"), "# hello from the fixture");
 
     // ggg.lock records the dependency with the resolved SHA.
-    let lock_str = project.read("ggg.lock");
-    assert!(lock_str.contains("name = \"my-addon\""));
-    assert!(lock_str.contains("git = \""));
-    assert!(lock_str.contains(&format!("sha = \"{}\"", repo.sha())));
-    assert!(lock_str.contains("rev = \"main\""));
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "my-addon")
+        .expect("sync should record an entry for my-addon");
+    let repo_url = repo.file_url();
+    assert_eq!(entry.git.as_deref(), Some(repo_url.as_str()));
+    assert_eq!(entry.rev.as_deref(), Some("main"));
+    assert_eq!(entry.sha.as_deref(), Some(repo.sha()));
 }
 
 /// A `rev` that points at a tag resolves to the tagged commit's SHA.
@@ -63,9 +68,14 @@ fn sync_resolves_tag_rev() {
         .success()
         .stdout(contains("tagged-addon"));
 
-    let lock_str = project.read("ggg.lock");
-    assert!(lock_str.contains("rev = \"v1.0.0\""));
-    assert!(lock_str.contains(&format!("sha = \"{}\"", repo.sha())));
+    let lock = project.read_ggg_lock();
+    let entry = lock
+        .entries
+        .iter()
+        .find(|e| e.name == "tagged-addon")
+        .expect("sync should record an entry for tagged-addon");
+    assert_eq!(entry.rev.as_deref(), Some("v1.0.0"));
+    assert_eq!(entry.sha.as_deref(), Some(repo.sha()));
 }
 
 /// A git dependency whose repository contains a submodule entry installs

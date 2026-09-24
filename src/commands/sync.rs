@@ -16,6 +16,7 @@
 //! 3. **Execute phase** - [`crate::dependency::sync::execute`] writes files and
 //!    removes stale entries, then `ggg.lock` and `.ggg.state` are persisted.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -94,7 +95,7 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
         if written > 0 {
             println!(
                 "  {} ({}): installed {} file{} ({} total)",
-                work.resolved.dep.name,
+                work.resolved.name(),
                 work.resolve_note,
                 written,
                 if written == 1 { "" } else { "s" },
@@ -103,7 +104,7 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
         } else {
             println!(
                 "  {} ({}): up to date ({} file{})",
-                work.resolved.dep.name,
+                work.resolved.name(),
                 work.resolve_note,
                 total,
                 if total == 1 { "" } else { "s" },
@@ -112,6 +113,14 @@ pub fn run(dry_run: bool, force: bool, with_export_templates: bool) -> Result<()
         lock.upsert(&work.resolved);
         new_state.upsert_entry(work.plan.entry.clone());
     }
+
+    // Reconcile `ggg.lock` with `ggg.toml`: prune entries for dependencies
+    // that are no longer declared. Entries whose dependency changed source
+    // kind (e.g. git -> archive) were already rewritten wholesale by the
+    // `upsert` calls above, since they match by name.
+    let config_names: HashSet<&str> = config.dependency.iter().map(|d| d.name.as_str()).collect();
+    lock.entries
+        .retain(|e| config_names.contains(e.name.as_str()));
 
     lock.save(Path::new("ggg.lock"))
         .context("failed to write ggg.lock")?;
@@ -133,7 +142,7 @@ fn print_plan(works: &[DepWork], cleanup: &CleanupPlan) {
     for work in works {
         let total = work.plan.entry.files.len();
         let to_write = work.plan.to_write.len();
-        let name = &work.resolved.dep.name;
+        let name = work.resolved.name();
         let note = &work.resolve_note;
 
         if !work.plan.conflicts.is_empty() {
@@ -182,7 +191,7 @@ fn print_conflicts(works: &[DepWork], cleanup: &CleanupPlan) {
         if work.plan.conflicts.is_empty() {
             continue;
         }
-        eprintln!("\n  {}:", work.resolved.dep.name);
+        eprintln!("\n  {}:", work.resolved.name());
         for f in &work.plan.conflicts.modified {
             eprintln!("    {}  (modified since last install)", f);
         }

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+- `ggg search` now queries the Godot Asset Store by default. Use `--source asset-library` to search the older Godot Asset Library.
+- `ggg deps` now reports Asset Store dependencies as `asset-store`, and Asset Library dependencies as `asset-lib` (previously `asset`).
+- `ggg add asset` now adds a Godot Asset Store dependency instead of searching the Godot Asset Library. Use `ggg add asset-library` (or `asset-library --id <N>`) for the old behaviour.
+
+### Added
+- Godot Asset Store dependencies are now a supported source: `ggg add asset-store <publisher>/<slug>` pins the latest stable release for your version of Godot; append `:version` to pin a specific release.
+- Store assets can be found by keyword from `ggg add` and `ggg search --source asset-store`.
+- `ggg add` of an archive now infers the dependency name from the URL's filename (`debug_draw_3d.zip` -> `debug-draw-3d`), so `--name` is optional.
+- `ggg update` now also updates Godot Asset Store dependencies, bumping the pinned release in `ggg.toml` to the newest stable version compatible with your Godot version (`--dry-run` previews).
+
+### Changed
+- The Godot Asset Library field in `ggg.toml` is renamed from `asset_id` to `asset_library_id`; old `asset_id` configs still load and are rewritten on the next save.
+
+### Fixed
+- `ggg update` no longer updates some dependencies while silently skipping a misconfigured one: when `ggg.lock` and `ggg.toml` disagree it now aborts and points at `ggg sync` to reconcile.
+- `ggg sync` now drops `ggg.lock` entries for dependencies no longer in `ggg.toml`. Previously stale entries lingered and could break `ggg update` and `ggg diff`.
+
+
 ## [0.4.1] - 2026-09-17
 
 ### Fixed

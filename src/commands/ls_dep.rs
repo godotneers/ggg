@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::config::{Config, DepKind};
+use crate::config::Config;
+use crate::dependency::ResolvedDependency;
 use crate::dependency::cache::DependencyCache;
 use crate::dependency::ensure::ensure_dependency;
 use crate::dependency::lockfile::LockFile;
@@ -33,8 +34,9 @@ pub fn run(name: &str, show_all: bool) -> Result<()> {
     let mut lock = LockFile::load_or_empty(Path::new("ggg.lock"))?;
     let dep_cache = DependencyCache::from_env()?;
 
-    let (resolved, _note) = ensure_dependency(dep, &lock, &dep_cache)
-        .with_context(|| format!("failed to resolve {:?}", name))?;
+    let (resolved, _note) =
+        ensure_dependency(dep, &lock, &dep_cache, Some(&config.project.godot.version))
+            .with_context(|| format!("failed to resolve {:?}", name))?;
 
     lock.upsert(&resolved);
     lock.save(Path::new("ggg.lock"))
@@ -48,15 +50,32 @@ pub fn run(name: &str, show_all: bool) -> Result<()> {
     files.sort_unstable();
 
     // Header: "name  (rev -> sha[:8]...)" for git, "name  (sha[:8]...)" for archive.
-    let version_note = match dep.kind() {
-        DepKind::Git { rev, .. } => format!("{} -> {}...", rev, &resolved.sha[..8]),
-        DepKind::Archive { .. } => format!("{}...", &resolved.sha[..8]),
-        DepKind::AssetLib { asset_id } => {
-            let version = resolved
+    let version_note = match &resolved {
+        ResolvedDependency::Git(g) => format!("{} -> {}...", g.rev, &resolved.sha()[..8]),
+        ResolvedDependency::Archive(_) => format!("{}...", &resolved.sha()[..8]),
+        ResolvedDependency::AssetLib(a) => {
+            let version = a
                 .asset_version
                 .map(|v| format!("v{} ", v))
                 .unwrap_or_default();
-            format!("asset #{asset_id} {version}-> {}...", &resolved.sha[..8])
+            format!(
+                "asset #{} {version}-> {}...",
+                a.asset_library_id,
+                &resolved.sha()[..8]
+            )
+        }
+        ResolvedDependency::AssetStore(a) => {
+            let version = a
+                .release_version
+                .as_deref()
+                .map(|v| format!("v{v}"))
+                .unwrap_or_default();
+            format!(
+                "{}/{} {version} -> {}...",
+                a.publisher,
+                a.asset,
+                &resolved.sha()[..8]
+            )
         }
     };
     println!("{name}  ({version_note})");

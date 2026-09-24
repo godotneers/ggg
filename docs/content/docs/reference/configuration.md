@@ -81,13 +81,14 @@ This is primarily useful for files that the Godot editor rewrites automatically 
 
 Declares an addon dependency. Each entry in the array describes one addon.
 
-Dependencies come in three kinds:
+Dependencies come in four kinds:
 
 - **Git dependencies** fetch a specific revision from a git repository. Use these for addons hosted on GitHub or any other git host.
 - **Archive dependencies** download a pre-built archive (`.zip`, `.tar.gz`, `.tgz`) directly from a URL. Use these for addons distributed as release assets rather than source repositories.
-- **Asset library dependencies** install directly from the [Godot Asset Library](https://godotengine.org/asset-library/). Use `ggg add asset` to add these; the numeric asset ID is stored in `ggg.toml`.
+- **Asset library dependencies** install directly from the [Godot Asset Library](https://godotengine.org/asset-library/). Use `ggg add asset-library` to add these; the numeric asset ID is stored in `ggg.toml`.
+- **Asset Store dependencies** install from the [Godot Asset Store](https://store.godotengine.org/), pinned to a specific release via its version string.
 
-Exactly one of `git`, `url`, or `asset_id` must be set on each dependency. Fields that belong to one kind are rejected on the others.
+Exactly one of `git`, `url`, `asset_library_id`, or `asset_store_asset` must be set on each dependency. Fields that belong to one kind are rejected on the others.
 
 After `ggg sync` runs, each dependency's resolved identity is recorded in `ggg.lock`. Subsequent syncs use the locked value unless the dependency changes in `ggg.toml`.
 
@@ -114,11 +115,25 @@ strip_components = 1
 
 ```toml
 [[dependency]]
-name     = "dialogic"
-asset_id = 1216
+name                = "dialogic"
+asset_library_id    = 1216
 ```
 
-The asset ID is the numeric ID shown in the asset library URL (e.g. `godotengine.org/asset-library/asset/1216`). Use `ggg add asset` or `ggg search` to find IDs without having to visit the website manually.
+The asset ID is the numeric ID shown in the asset library URL (e.g. `godotengine.org/asset-library/asset/1216`). Use `ggg add asset-library` or `ggg search` to find IDs without having to visit the website manually.
+
+### Asset Store dependency
+
+The [Godot Asset Store](https://store.godotengine.org/) identifies assets as a `publisher_slug/asset_slug` pair and serves multiple releases per asset. Store dependencies pin a release by its version string:
+
+```toml
+[[dependency]]
+name               = "my-store-addon"
+asset_store_asset  = "publisher/my-store-addon:1.2.3"
+```
+
+The spec is a `publisher_slug/asset_slug:version` triple. Slugs contain only lowercase letters, digits, and `-` (3–256 characters); the version follows docker-tag syntax (starts with a letter or digit, then letters, digits, `.`, `_`, or `-`). `strip_components` and `map` apply as usual, and asset store deps default to `strip_components = 1`.
+
+Use [`ggg add asset-store`](@/docs/reference/commands/add.md) to add these: a bare `publisher_slug/asset_slug` resolves to the latest stable release compatible with the project's Godot version, and a `:version` suffix pins an exact one.
 
 Multiple dependencies are declared by repeating the `[[dependency]]` header:
 
@@ -150,7 +165,7 @@ Must be unique within `ggg.toml`. Use lowercase letters, digits, and hyphens.
 
 #### `git`
 
-**Git deps only. Required when using a git source.** The URL of the git repository that contains the addon. HTTPS and SSH URLs are both accepted. Mutually exclusive with `url`.
+**Git deps only. Required when using a git source.** The URL of the git repository that contains the addon. HTTPS and SSH URLs are both accepted. Mutually exclusive with `url`, `asset_library_id`, and `asset_store_asset`.
 
 ```toml
 git = "https://github.com/bitwes/Gut.git"
@@ -173,23 +188,37 @@ When `rev` is a tag or branch, `ggg sync` resolves it to a commit SHA and record
 
 ---
 
-#### `asset_id`
+#### `asset_library_id`
 
-**Asset library deps only. Required when using an asset library source.** The numeric ID of the asset on the [Godot Asset Library](https://godotengine.org/asset-library/). Mutually exclusive with `git` and `url`.
+**Asset library deps only. Required when using an asset library source.** The numeric ID of the asset on the [Godot Asset Library](https://godotengine.org/asset-library/). Mutually exclusive with `git`, `url`, and `asset_store_asset`.
 
 ```toml
-asset_id = 1216
+asset_library_id = 1216
 ```
 
-Use [`ggg add asset`](@/docs/reference/commands/add.md) or [`ggg search`](@/docs/reference/commands/search.md) to look up asset IDs without visiting the website manually.
+Legacy configs written as `asset_id` are still accepted for backwards compatibility; loading and re-saving such a file rewrites the field as `asset_library_id`.
+
+Use [`ggg add asset-library`](@/docs/reference/commands/add.md) or [`ggg search`](@/docs/reference/commands/search.md) to look up asset IDs without visiting the website manually.
 
 Use [`ggg update`](@/docs/reference/commands/update.md) to check for and apply newer versions of asset library dependencies.
 
 ---
 
+#### `asset_store_asset`
+
+**Asset Store deps only. Required when using an asset store source.** An asset on the [Godot Asset Store](https://store.godotengine.org/) pinned to a release, written as `publisher_slug/asset_slug:version`. Mutually exclusive with `git`, `url`, and `asset_library_id`.
+
+```toml
+asset_store_asset = "publisher/my-store-addon:1.2.3"
+```
+
+Slugs contain only lowercase letters, digits, and `-` and are 3–256 characters long. The version follows docker-tag syntax: it starts with a letter or digit and may then contain letters, digits, `.`, `_`, or `-`.
+
+---
+
 #### `url`
 
-**Archive deps only. Required when using an archive source.** HTTPS URL of a pre-built archive. The URL must end in `.zip`, `.tar.gz`, or `.tgz`. Mutually exclusive with `git`.
+**Archive deps only. Required when using an archive source.** HTTPS URL of a pre-built archive. The URL must end in `.zip`, `.tar.gz`, or `.tgz`. Mutually exclusive with `git`, `asset_library_id`, and `asset_store_asset`.
 
 ```toml
 url = "https://github.com/example/addon/releases/download/v1.0/addon.zip"
@@ -211,10 +240,10 @@ Strongly recommended: it catches accidental or malicious changes to the archive 
 
 #### `strip_components`
 
-**Archive and asset library deps only. Optional.** Number of leading path components to remove from archive entries before installing, equivalent to `tar --strip-components`.
+**Archive, asset library, and asset store deps only. Optional.** Number of leading path components to remove from archive entries before installing, equivalent to `tar --strip-components`.
 
 - Archive deps default to `0`.
-- Asset library deps default to `1`, because the asset library always packages assets inside a top-level folder named after the asset.
+- Asset library and asset store deps default to `1`, because downloads are always packaged inside a top-level folder named after the asset.
 
 ```toml
 strip_components = 1

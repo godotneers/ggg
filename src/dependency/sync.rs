@@ -33,7 +33,7 @@ use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 
-use crate::config::{Config, DepKind};
+use crate::config::Config;
 use crate::dependency::ResolvedDependency;
 use crate::dependency::cache::DependencyCache;
 use crate::dependency::ensure::ensure_dependency;
@@ -119,7 +119,8 @@ pub fn plan(
     let mut works: Vec<DepWork> = Vec::new();
 
     for dep in &config.dependency {
-        let (resolved, resolve_note) = ensure_dependency(dep, lock, dep_cache)?;
+        let (resolved, resolve_note) =
+            ensure_dependency(dep, lock, dep_cache, Some(&config.project.godot.version))?;
 
         let cache_dir = dep_cache.entry_path(&resolved);
 
@@ -158,7 +159,7 @@ pub fn plan(
 pub fn execute(sync_plan: &SyncPlan, project_root: &Path) -> Result<()> {
     for work in &sync_plan.works {
         execute_install(&work.plan, project_root)
-            .with_context(|| format!("failed to install {:?}", work.resolved.dep.name))?;
+            .with_context(|| format!("failed to install {:?}", work.resolved.name()))?;
     }
     execute_cleanup(&sync_plan.cleanup, project_root)
 }
@@ -222,7 +223,7 @@ fn plan_install(
 
     Ok(InstallPlan {
         entry: StateEntry {
-            name: dep.dep.name.clone(),
+            name: dep.name().to_owned(),
             files: all_files,
         },
         to_write,
@@ -316,25 +317,19 @@ fn collect_file_pairs(
     dep: &ResolvedDependency,
     cache_dir: &Path,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let n_strip = match dep.dep.kind() {
-        DepKind::Archive {
-            strip_components, ..
-        } => strip_components,
-        DepKind::Git { .. } => dep.dep.strip_components.unwrap_or(0),
-        DepKind::AssetLib { .. } => dep.dep.strip_components.unwrap_or(1),
-    };
+    let n_strip = dep.strip_components();
 
     let mut raw: Vec<(PathBuf, PathBuf)> = Vec::new();
     collect_recursive(cache_dir, Path::new(""), &mut raw)
-        .with_context(|| format!("failed to enumerate cache for {:?}", dep.dep.name))?;
+        .with_context(|| format!("failed to enumerate cache for {:?}", dep.name()))?;
 
     let stripped: Vec<(PathBuf, PathBuf)> = raw
         .into_iter()
         .filter_map(|(abs, rel)| Some((abs, strip_rel_path(&rel, n_strip)?)))
         .collect();
 
-    let exclude_set = match &dep.dep.exclude {
-        Some(patterns) => Some(build_exclude_set(patterns, &dep.dep.name)?),
+    let exclude_set = match dep.exclude() {
+        Some(patterns) => Some(build_exclude_set(patterns, dep.name())?),
         None => None,
     };
     // Check the destination path itself and every ancestor so that a bare
@@ -356,7 +351,7 @@ fn collect_file_pairs(
         }
     };
 
-    match &dep.dep.map {
+    match dep.map() {
         None => Ok(stripped
             .into_iter()
             .filter(|(_, dest)| !excluded(dest))
@@ -384,7 +379,7 @@ fn collect_file_pairs(
                 if !matched {
                     anyhow::bail!(
                         "dependency {:?}: map entry `from = {:?}` does not exist in the cached tree",
-                        dep.dep.name,
+                        dep.name(),
                         entry.from
                     );
                 }
@@ -621,33 +616,38 @@ fn prune_empty_dirs(dirs: &[PathBuf], project_root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Dependency, MapEntry};
+    use crate::config::MapEntry;
     use crate::dependency::state::{InstalledFile, StateEntry};
     use tempfile::TempDir;
 
     // --- helpers ------------------------------------------------------------
 
     fn make_dep(name: &str, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
-        let mut dep = Dependency::new_git(name, "https://example.com/repo.git", "main");
-        dep.map = map;
-        ResolvedDependency {
-            dep,
+        ResolvedDependency::Git(crate::dependency::GitResolvedDependency {
+            meta: crate::dependency::ResolvedMeta {
+                name: name.to_owned(),
+                map,
+                exclude: None,
+            },
+            git: "https://example.com/repo.git".to_owned(),
+            rev: "main".to_owned(),
             sha: "a".repeat(40),
-            resolved_url: None,
-            asset_version: None,
-        }
+        })
     }
 
     fn make_archive_dep(name: &str, strip: u32, map: Option<Vec<MapEntry>>) -> ResolvedDependency {
-        let mut dep = Dependency::new_archive(name, "https://example.com/archive.zip");
-        dep.strip_components = if strip == 0 { None } else { Some(strip) };
-        dep.map = map;
-        ResolvedDependency {
-            dep,
+        let strip_components = if strip == 0 { None } else { Some(strip) };
+        ResolvedDependency::Archive(crate::dependency::ArchiveResolvedDependency {
+            meta: crate::dependency::ResolvedMeta {
+                name: name.to_owned(),
+                map,
+                exclude: None,
+            },
+            url: "https://example.com/archive.zip".to_owned(),
+            sha256: None,
+            strip_components,
             sha: "abc123".into(),
-            resolved_url: None,
-            asset_version: None,
-        }
+        })
     }
 
     fn write(dir: &Path, rel: &str, content: &[u8]) {
@@ -822,7 +822,9 @@ mod tests {
         exclude: Vec<String>,
     ) -> ResolvedDependency {
         let mut dep = make_dep(name, map);
-        dep.dep.exclude = Some(exclude);
+        if let ResolvedDependency::Git(g) = &mut dep {
+            g.meta.exclude = Some(exclude);
+        }
         dep
     }
 
