@@ -1,6 +1,6 @@
 [package]
 name = "ggg"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/godotneers/ggg"
@@ -37,6 +37,12 @@ serde_json = "1"
 gix = { version = "0.81.0", features = ["blocking-http-transport-reqwest", "blocking-http-transport-reqwest-rust-tls", "blocking-network-client", "attributes"] }
 zip = "2"
 sha2 = "0.10"
+
+# Keep link.exe memory low when building test binaries (together with the
+# `jobs` cap in .cargo/config.toml this avoids Windows pagefile exhaustion
+# during `cargo test` on machines with many cores).
+[profile.test]
+debug = false
 
 # The profile that 'dist' will build with
 [profile.dist]
