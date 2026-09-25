@@ -1,0 +1,6 @@
+# Cap parallel build jobs: `cargo test` links every integration test binary
+# concurrently, and on high-core machines the parallel MSVC linkers exceed the
+# Windows pagefile commit limit (os error 1455, "paging file is too small").
+# The cap applies to every clone/CI run and still leaves normal builds parallel.
+[build]
+jobs = 4
